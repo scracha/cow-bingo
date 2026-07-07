@@ -1,3 +1,4 @@
 # Sensitive files - do not commit
 config.php
 admin.php
+*.bak
