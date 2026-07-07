@@ -1,0 +1,12 @@
+# Protect config file from direct access
+<Files "config.php">
+    Require all denied
+</Files>
+
+# Protect schema file
+<Files "schema.sql">
+    Require all denied
+</Files>
+
+# Prevent directory listing
+Options -Indexes
