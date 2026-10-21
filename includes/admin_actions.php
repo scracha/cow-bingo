@@ -45,25 +45,89 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
 
         case 'assign':
             $eventDbId = (int) ($_POST['event_db_id'] ?? 0);
-            $ticketId = trim($_POST['ticket_id'] ?? '');
             $buyerName = trim($_POST['buyer_name'] ?? '');
             $buyerEmail = trim($_POST['buyer_email'] ?? '');
+            $rawTicketId = trim($_POST['ticket_id'] ?? '');
+            
+            // FIX 1: Correctly evaluate unchecked checkboxes as 0
+            $isPaid = isset($_POST['is_paid']) ? 1 : 0;
+            
             $assignedBy = $_SESSION['admin_name'] ?? 'Admin';
+            $selectedCells = array_filter(array_map('trim', explode(',', $_POST['selected_cells'] ?? '')));
 
-            if (!$eventDbId || !$ticketId || !$buyerName) {
-                return '❌ Event, Ticket ID, and Buyer Name are required.';
+            if (!$eventDbId || empty($buyerName)) {
+                return '❌ Event and Buyer Name are required.';
             }
-            $evStmt = $db->prepare("SELECT grid_cols, grid_rows FROM cow_bingo_events WHERE id = ?");
-            $evStmt->execute([$eventDbId]);
-            $ev = $evStmt->fetch(PDO::FETCH_ASSOC);
 
-            if (!$ev) return '❌ Event not found.';
-            $cell = assignRandomCell($db, $eventDbId, (int)$ev['grid_cols'], (int)$ev['grid_rows']);
-            if (!$cell) return '❌ Grid is fully sold out for this event!';
+            if (empty($selectedCells)) {
+                return '❌ Please select at least one cell from the grid or use Quick Random.';
+            }
 
-            $stmt = $db->prepare("INSERT INTO cow_bingo_cells (event_id, ticket_id, buyer_name, buyer_email, cell_reference, is_paid, assigned_by) VALUES (?, ?, ?, ?, ?, 1, ?)");
-            $stmt->execute([$eventDbId, $ticketId, $buyerName, $buyerEmail, $cell, $assignedBy]);
-            return "✅ Assigned cell <strong>$cell</strong> to $buyerName (Ticket: $ticketId)";
+            // Generate batch/order ID for grouping multi-cell purchases
+            $batchId = $rawTicketId ?: ('MANUAL-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 6)));
+
+            $db->beginTransaction();
+            $assignedList = [];
+            $hasCollision = false;
+            $collisionCell = '';
+
+            $insertStmt = $db->prepare("
+                INSERT INTO cow_bingo_cells 
+                (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, assigned_by) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ");
+
+            $idx = 1;
+            $multi = count($selectedCells) > 1;
+
+            foreach ($selectedCells as $cell) {
+                $ticketId = $multi ? ($batchId . '-' . $idx++) : ($rawTicketId ?: $batchId);
+
+                try {
+                    $insertStmt->execute([
+                        $eventDbId,
+                        $ticketId,
+                        $batchId,
+                        $buyerName,
+                        $buyerEmail ?: null,
+                        strtoupper($cell),
+                        $isPaid,
+                        $assignedBy
+                    ]);
+                    $assignedList[] = strtoupper($cell);
+                } catch (PDOException $e) {
+                    // FIX 2: Distinguish duplicate ticket errors from cell collisions & DB errors
+                    $isDuplicate = ($e->errorInfo[1] ?? null) === 1062
+                        || strpos($e->getMessage(), '1062') !== false
+                        || strpos($e->getMessage(), 'Duplicate entry') !== false;
+
+                    if (!$isDuplicate) {
+                        $db->rollBack();
+                        return "❌ Database error: " . htmlspecialchars($e->getMessage());
+                    }
+
+                    if (strpos($e->getMessage(), 'unique_ticket_per_event') !== false) {
+						$db->rollBack();
+						return "❌ Ticket/Ref <strong>" . htmlspecialchars($ticketId) . "</strong> is already assigned to a cell. Each square requires a unique ticket ID. To assign multiple squares to this buyer, select them together on the grid above, or leave the reference blank to auto-generate.";
+					}
+
+                    // Genuine cell collision (unique_cell_per_event)
+                    $hasCollision = true;
+                    $collisionCell = $cell;
+                    break;
+                }
+            }
+
+            if ($hasCollision) {
+                $db->rollBack();
+                return "❌ Cell <strong>$collisionCell</strong> was already taken! No cells were assigned.";
+            }
+
+            $db->commit();
+            $cellStr = implode(', ', $assignedList);
+            $count = count($assignedList);
+            $paidStatus = $isPaid ? ' (Paid)' : ' <span style="color:#856404;font-weight:bold;">(Unpaid)</span>';
+            return "✅ Successfully assigned $count cell" . ($count > 1 ? 's' : '') . " (<strong>$cellStr</strong>) to $buyerName$paidStatus [Ref: $batchId].";
 
         case 'delete_cell':
             $cellId = (int) ($_POST['cell_id'] ?? 0);
@@ -79,14 +143,24 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             if ($cell) {
                 $buyer = htmlspecialchars($cell['buyer_name']);
                 $ticket = htmlspecialchars($cell['ticket_id']);
-                if (!empty($cell['order_id']) && function_exists('cancelHiEventsOrder')) {
+                $orderId = $cell['order_id'] ?? '';
+
+                // FIX 3: Only ping hi.events if this was an actual external order (not a local MANUAL- or CASH- batch)
+                $isExternalHiEventsOrder = !empty($orderId) 
+                    && strpos($orderId, 'MANUAL-') !== 0 
+                    && strpos($orderId, 'CASH-') !== 0;
+
+                if ($isExternalHiEventsOrder && function_exists('cancelHiEventsOrder')) {
                     $subject = "Ticket Cancellation Notice - Payment Not Received";
                     $body = "Hi {$cell['buyer_name']},\n\nYour Cow Bingo square reservation (Ticket: {$cell['ticket_id']}) has been cancelled as payment was not received.\n\nThank you.";
-                    if (function_exists('messageHiEventsOrder')) messageHiEventsOrder($cell['hievents_event_id'], $cell['order_id'], $subject, $body);
-                    cancelHiEventsOrder($cell['hievents_event_id'], $cell['order_id']);
+                    if (function_exists('messageHiEventsOrder')) {
+                        messageHiEventsOrder($cell['hievents_event_id'], $orderId, $subject, $body);
+                    }
+                    cancelHiEventsOrder($cell['hievents_event_id'], $orderId);
                 }
+
                 $db->prepare("DELETE FROM cow_bingo_cells WHERE id = ?")->execute([$cellId]);
-                return "✅ Cancelled square for <strong>{$buyer}</strong> (Ticket: {$ticket}). Buyer notified and cell freed.";
+                return "✅ Cancelled square for <strong>{$buyer}</strong> (Ticket: {$ticket}). Square returned to the paddock.";
             }
             return '❌ Cell not found.';
 
