@@ -6,7 +6,13 @@
  * Example: grid.php?event=42
  */
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+$isAdmin = !empty($_SESSION['admin_id']);
+
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/includes/bingo_helpers.php'; // <-- ADD THIS
 
 $db = getDbConnection();
 
@@ -61,16 +67,9 @@ if ($eventSlug) {
     $buyTicketsUrl .= '/' . $eventSlug;
 }
 
-// Fetch booked cells for this event
-$cellStmt = $db->prepare(
-    "SELECT cell_reference, ticket_id, buyer_name, buyer_email, prize, created_at 
-     FROM cow_bingo_cells WHERE event_id = ?"
-);
-$cellStmt->execute([$bingoEventId]);
-$bookings = [];
-while ($row = $cellStmt->fetch(PDO::FETCH_ASSOC)) {
-    $bookings[$row['cell_reference']] = $row;
-}
+// Fetch booked cells for this event including payment status
+// Fetch booked cells using shared helper
+$bookings = getEventBookings($db, $bingoEventId);
 
 $cols = array_slice(range('A', 'Z'), 0, $gridCols);
 $totalCells = $gridCols * $gridRows;
@@ -154,6 +153,19 @@ $availableCount = $totalCells - $soldCount;
         .cell:hover { transform: scale(1.1); z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
         .cell.taken:hover { background-color: #f0b88a; }
         .cell.winner:hover { background-color: #ffe44d; }
+
+        /* Bridge Officer HUD: Unpaid square styling (Visible only to logged in admins) */
+        .cell.taken.admin-unpaid {
+            background-image: repeating-linear-gradient(
+                45deg,
+                rgba(220, 53, 69, 0.3),
+                rgba(220, 53, 69, 0.3) 6px,
+                transparent 6px,
+                transparent 12px
+            ) !important;
+            border: 2px dashed #dc3545 !important;
+        }
+
         .tooltip {
             display: none; position: fixed; background: #333; color: white;
             padding: 10px 14px; border-radius: 6px; font-size: 13px; line-height: 1.5;
@@ -164,12 +176,17 @@ $availableCount = $totalCells - $soldCount;
             content: ''; position: absolute; top: 100%; left: 50%;
             transform: translateX(-50%); border: 6px solid transparent; border-top-color: #333;
         }
-        .legend { display: flex; justify-content: center; gap: 20px; margin-top: 15px; font-size: 0.9em; }
+        .legend { display: flex; justify-content: center; gap: 20px; margin-top: 15px; font-size: 0.9em; flex-wrap: wrap; }
         .legend-item { display: flex; align-items: center; gap: 6px; }
         .legend-swatch { width: 18px; height: 18px; border-radius: 3px; border: 1px solid #999; }
         .legend-swatch.available { background-color: #7bc67b; border-color: #5aa35a; }
         .legend-swatch.sold { background-color: #e8a87c; border-color: #d4845a; }
         .legend-swatch.winner { background-color: #ffd700; border-color: #daa520; }
+        .legend-swatch.admin-unpaid {
+            background-color: #e8a87c;
+            background-image: repeating-linear-gradient(45deg, rgba(220, 53, 69, 0.4), rgba(220, 53, 69, 0.4) 3px, transparent 3px, transparent 6px);
+            border: 2px dashed #dc3545;
+        }
 
         /* Search bar */
         .search-bar {
@@ -207,10 +224,9 @@ $availableCount = $totalCells - $soldCount;
             0%, 100% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.8); }
             50% { box-shadow: 0 0 20px rgba(255, 215, 0, 1); }
         }
-        /* Dim non-matching cells when searching */
         .cell.dimmed { opacity: 0.3; }
-
         .legend-swatch.highlight { background-color: #e8a87c; border: 3px solid #ffd700; }
+
         @media (max-width: 700px) {
             .cell { min-width: 28px; font-size: 10px; }
             header h1 { font-size: 1.5em; }
@@ -223,12 +239,8 @@ $availableCount = $totalCells - $soldCount;
             padding: 20px; margin-top: 20px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.2);
         }
-        .winners-summary h2 {
-            margin: 0 0 15px; color: #5c4a00; font-size: 1.3em;
-        }
-        .winners-list {
-            display: flex; flex-wrap: wrap; gap: 12px;
-        }
+        .winners-summary h2 { margin: 0 0 15px; color: #5c4a00; font-size: 1.3em; }
+        .winners-list { display: flex; flex-wrap: wrap; gap: 12px; }
         .winner-card {
             display: flex; align-items: center; gap: 12px;
             background: linear-gradient(135deg, #fff8e1, #fffde7);
@@ -266,11 +278,12 @@ $availableCount = $totalCells - $soldCount;
 
     <!-- Find My Cells search -->
     <div class="search-bar">
-        <input type="text" id="searchInput" placeholder="🔍 Find my cells (enter your name or order ID)..." />
+        <input type="text" id="searchInput" placeholder="🔍 Find my cells (enter your name or ticket ID)..." />
         <button id="searchBtn" onclick="findCells()">Find</button>
         <button id="clearBtn" onclick="clearSearch()" style="display:none;">Clear</button>
         <span id="searchResult"></span>
     </div>
+
     <div class="grid-wrapper">
         <div class="grid-header">
             <div></div>
@@ -291,12 +304,15 @@ $availableCount = $totalCells - $soldCount;
                         $b = $bookings[$cellRef];
                         $classes .= ' taken';
                         if ($isWinner) $classes .= ' winner';
+                        if ($isAdmin && empty($b['is_paid'])) $classes .= ' admin-unpaid';
+
                         $dataAttrs = sprintf(
-                            'data-cell="%s" data-name="%s" data-ticket="%s" data-prize="%s"',
+                            'data-cell="%s" data-name="%s" data-ticket="%s" data-prize="%s" data-paid="%s"',
                             htmlspecialchars($cellRef),
                             htmlspecialchars($b['buyer_name']),
                             htmlspecialchars($b['ticket_id']),
-                            htmlspecialchars($b['prize'] ?? '')
+                            htmlspecialchars($b['prize'] ?? ''),
+                            !empty($b['is_paid']) ? '1' : '0'
                         );
                     }
                 ?>
@@ -309,6 +325,9 @@ $availableCount = $totalCells - $soldCount;
             <div class="legend-item"><div class="legend-swatch sold"></div><span>Sold</span></div>
             <div class="legend-item"><div class="legend-swatch winner"></div><span>Winner <img src="cow_poo_2.svg" style="width:36px;height:36px;vertical-align:middle;"></span></div>
             <div class="legend-item"><div class="legend-swatch highlight"></div><span>Your Cells</span></div>
+            <?php if ($isAdmin): ?>
+                <div class="legend-item"><div class="legend-swatch admin-unpaid"></div><span style="color:#dc3545;font-weight:bold;">Unpaid (Admin Only)</span></div>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -344,6 +363,13 @@ $availableCount = $totalCells - $soldCount;
     takenCells.forEach(cell => {
         cell.addEventListener('mouseenter', (e) => {
             let html = `<strong>${cell.dataset.cell}</strong><br>🎫 Ticket: ${cell.dataset.ticket}<br>👤 ${cell.dataset.name}`;
+            
+            <?php if ($isAdmin): ?>
+            if (cell.dataset.paid === "0") {
+                html += `<br><span style="color:#ffc107;font-weight:bold;">⚠️ Awaiting Payment (Unpaid)</span>`;
+            }
+            <?php endif; ?>
+
             if (cell.dataset.prize) {
                 html += `<br><img src="cow_poo_2.svg" style="width:16px;height:16px;vertical-align:middle;display:inline;"> <strong>${cell.dataset.prize}</strong>`;
             }
@@ -449,7 +475,7 @@ function showEventList(array $events): void
 </head>
 <body>
 <div class="container">
-    <h1>🐄 Cow Bingo</h1>
+    <h1>🐮 Cow Bingo</h1>
     <?php if (empty($events)): ?>
         <p class="empty">No active cow bingo events right now.</p>
     <?php else: ?>

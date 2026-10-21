@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS cow_bingo_cells (
     buyer_name VARCHAR(255) NOT NULL,
     buyer_email VARCHAR(255) DEFAULT NULL,
     cell_reference VARCHAR(5) NOT NULL,             -- e.g. 'C13'
+    is_paid TINYINT(1) NOT NULL DEFAULT 1,
+    assigned_by VARCHAR(100) NULL DEFAULT 'hi.events', -- 'hi.events', admin name, or iPad label
     prize VARCHAR(255) DEFAULT NULL,                -- e.g. '1st Prize', 'Free Cake'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY unique_ticket_per_event (event_id, ticket_id),
@@ -35,17 +37,18 @@ CREATE TABLE IF NOT EXISTS cow_bingo_cells (
     FOREIGN KEY (event_id) REFERENCES cow_bingo_events(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
--- Admin users table: super admins see all, event admins see only their events
+-- Admin users table: super admins see all, event admins see their events, sellers are locked to pos.php
 CREATE TABLE IF NOT EXISTS cow_bingo_admins (
     id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(100) UNIQUE NOT NULL,
     password_hash VARCHAR(255) NOT NULL,            -- password_hash() output
     display_name VARCHAR(255) NOT NULL,
+    role ENUM('super_admin','event_admin','seller') NOT NULL DEFAULT 'event_admin',
     is_super_admin TINYINT(1) DEFAULT 0,           -- 1 = can manage all events + users
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
--- Links admins to specific events they can manage
+-- Links admins & sellers to specific events they can manage / sell for
 CREATE TABLE IF NOT EXISTS cow_bingo_admin_events (
     id INT AUTO_INCREMENT PRIMARY KEY,
     admin_id INT NOT NULL,
@@ -56,8 +59,16 @@ CREATE TABLE IF NOT EXISTS cow_bingo_admin_events (
 ) ENGINE=InnoDB;
 
 -- Insert default super admin (change password after first login!)
-INSERT IGNORE INTO cow_bingo_admins (username, password_hash, display_name, is_super_admin)
-VALUES ('admin', '$2y$10$placeholder', 'Super Admin', 1);
+INSERT IGNORE INTO cow_bingo_admins (username, password_hash, display_name, role, is_super_admin)
+VALUES ('admin', '$2y$10$placeholder', 'Super Admin', 'super_admin', 1);
+
+-- Login attempts tracking for brute force protection
+CREATE TABLE IF NOT EXISTS cow_bingo_login_attempts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    ip_address VARCHAR(45) NOT NULL,
+    attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_ip_time (ip_address, attempted_at)
+) ENGINE=InnoDB;
 
 -- Log table to capture raw webhook payloads for debugging
 CREATE TABLE IF NOT EXISTS webhook_log (
