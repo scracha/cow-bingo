@@ -13,10 +13,19 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $cols = (int) ($_POST['grid_cols'] ?? 16);
             $rows = (int) ($_POST['grid_rows'] ?? 16);
 
-            if ($hieventsId && $name) {
+            if (empty($name)) {
+                return '❌ Event Name is required.';
+            }
+
+            $hieventsId = $hieventsId ?: null;
+            $slug = null;
+            $startDate = null;
+            $venue = null;
+
+            // 1. Fetch metadata from hi.events if an ID is provided and the server is enabled
+            if ($hieventsId && (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED)) {
                 $details = function_exists('fetchEventDetails') ? fetchEventDetails($hieventsId) : [];
                 $slug = $details['slug'] ?? (function_exists('fetchEventSlug') ? fetchEventSlug($hieventsId) : null);
-                $startDate = null;
                 if (!empty($details['start_date'])) {
                     try {
                         $dt = new DateTime($details['start_date']);
@@ -25,18 +34,134 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                     } catch (Exception $e) {}
                 }
                 $venue = $details['settings']['location_details']['venue_name'] ?? null;
+            }
 
-                try {
-                    $stmt = $db->prepare("INSERT INTO cow_bingo_events (hievents_event_id, event_name, event_slug, event_start, event_venue, grid_cols, grid_rows) VALUES (?, ?, ?, ?, ?, ?, ?)");
-                    $stmt->execute([$hieventsId, $name, $slug, $startDate, $venue, $cols, $rows]);
-                    return "✅ Event '<strong>$name</strong>' created.";
-                } catch (PDOException $e) {
-                    return (strpos($e->getMessage(), 'Duplicate entry') !== false)
-                        ? "⚠️ A Cow Bingo game is already configured for Hi.Events Event ID <strong>$hieventsId</strong>."
-                        : "❌ Error: " . $e->getMessage();
+            // 2. Fallback slug generation from local event name
+            if (empty($slug)) {
+                $slug = trim(preg_replace('/[^a-z0-9]+/i', '-', strtolower($name)), '-');
+            }
+
+            // 3. Parse Pricing Tiers from GUI (e.g. "1:10, 3:25, 5:40, 10:70")
+            $rawTiers = trim($_POST['pricing_tiers'] ?? '');
+            $parsedTiers = [];
+            if (!empty($rawTiers)) {
+                foreach (explode(',', $rawTiers) as $part) {
+                    $pair = explode(':', trim($part));
+                    if (count($pair) === 2 && is_numeric(trim($pair[0])) && is_numeric(trim($pair[1]))) {
+                        $parsedTiers[(int)trim($pair[0])] = (float)trim($pair[1]);
+                    }
                 }
             }
-            return '❌ Event ID and Name are required.';
+
+            // If empty, fallback to hi.events products if available, or system defaults
+            if (empty($parsedTiers) && $hieventsId && (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED) && function_exists('fetchHiEventsProducts')) {
+                $rawProducts = fetchHiEventsProducts($hieventsId);
+                foreach ($rawProducts as $p) {
+                    $title = strtolower($p['title'] ?? $p['name'] ?? '');
+                    $price = (float)($p['price'] ?? 0);
+                    if (preg_match('/(\d+)\s*(square|ticket|pack)/i', $title, $matches)) {
+                        $qty = (int)$matches[1];
+                    } elseif (strpos($title, 'single') !== false || strpos($title, '1') !== false) {
+                        $qty = 1;
+                    } else {
+                        $qty = 1;
+                    }
+                    $parsedTiers[$qty] = $price;
+                }
+            }
+
+            if (empty($parsedTiers)) {
+                $parsedTiers = defined('DEFAULT_PRICING_TIERS') ? DEFAULT_PRICING_TIERS : [1 => 10.00, 3 => 25.00, 5 => 40.00, 10 => 70.00];
+            }
+            $pricingJson = json_encode($parsedTiers);
+
+            try {
+                $stmt = $db->prepare("
+                    INSERT INTO cow_bingo_events 
+                    (hievents_event_id, event_name, event_slug, event_start, event_venue, grid_cols, grid_rows, pricing_tiers) 
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ");
+                $stmt->execute([$hieventsId, $name, $slug, $startDate, $venue, $cols, $rows, $pricingJson]);
+                $modeText = $hieventsId ? " (Linked to Hi.Events ID $hieventsId)" : " (Standalone / Offline)";
+                return "✅ Event '<strong>$name</strong>' created$modeText.";
+            } catch (PDOException $e) {
+                return (strpos($e->getMessage(), 'Duplicate entry') !== false)
+                    ? "⚠️ A Cow Bingo game is already configured for Hi.Events Event ID <strong>$hieventsId</strong>."
+                    : "❌ Error: " . $e->getMessage();
+            }
+
+        case 'link_hievents':
+            $eventDbId = (int) ($_POST['event_db_id'] ?? 0);
+            $hieventsId = trim($_POST['hievents_event_id'] ?? '');
+
+            if (!$eventDbId || empty($hieventsId)) {
+                return '❌ Event and Hi.Events ID are required.';
+            }
+
+            // Check for duplicate claim on another local event
+            $check = $db->prepare("SELECT id, event_name FROM cow_bingo_events WHERE hievents_event_id = ? AND id != ?");
+            $check->execute([$hieventsId, $eventDbId]);
+            if ($dup = $check->fetch(PDO::FETCH_ASSOC)) {
+                return "⚠️ Hi.Events ID <strong>$hieventsId</strong> is already linked to '{$dup['event_name']}'.";
+            }
+
+            $hiEventsOnline = (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED);
+            $details = [];
+
+            // 1. Validate ID exists on hi.events if server is reachable
+            if ($hiEventsOnline && function_exists('fetchEventDetails')) {
+                $details = fetchEventDetails($hieventsId);
+                if (empty($details)) {
+                    return "❌ Could not find Event ID <strong>$hieventsId</strong> on your Hi.Events server. Please check the ID.";
+                }
+            }
+
+            $slug = $details['slug'] ?? (function_exists('fetchEventSlug') ? fetchEventSlug($hieventsId) : null);
+            $startDate = null;
+            if (!empty($details['start_date'])) {
+                try {
+                    $dt = new DateTime($details['start_date']);
+                    $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
+                    $startDate = $dt->format('Y-m-d H:i:s');
+                } catch (Exception $e) {}
+            }
+            $venue = $details['settings']['location_details']['venue_name'] ?? null;
+
+            // 2. Fetch pricing tiers ONLY as a fallback if the local event doesn't have any configured yet
+            $pulledTiersJson = null;
+            if ($hiEventsOnline && function_exists('fetchHiEventsProducts')) {
+                $rawProducts = fetchHiEventsProducts($hieventsId);
+                $pulled = [];
+                foreach ($rawProducts as $p) {
+                    $title = strtolower($p['title'] ?? $p['name'] ?? '');
+                    $price = (float)($p['price'] ?? 0);
+                    if (preg_match('/(\d+)\s*(square|ticket|pack)/i', $title, $matches)) {
+                        $qty = (int)$matches[1];
+                    } elseif (strpos($title, 'single') !== false || strpos($title, '1') !== false) {
+                        $qty = 1;
+                    } else {
+                        $qty = 1;
+                    }
+                    $pulled[$qty] = $price;
+                }
+                if (!empty($pulled)) {
+                    $pulledTiersJson = json_encode($pulled);
+                }
+            }
+
+            // 3. Update without clobbering existing local slug or custom pricing tiers
+            $stmt = $db->prepare("
+                UPDATE cow_bingo_events 
+                SET hievents_event_id = ?, 
+                    event_slug = COALESCE(event_slug, ?),
+                    event_start = COALESCE(?, event_start),
+                    event_venue = COALESCE(?, event_venue),
+                    pricing_tiers = COALESCE(pricing_tiers, ?)
+                WHERE id = ?
+            ");
+            $stmt->execute([$hieventsId, $slug, $startDate, $venue, $pulledTiersJson, $eventDbId]);
+
+            return "✅ Successfully linked to Hi.Events Event ID <strong>$hieventsId</strong>. Existing local pricing and URLs preserved.";
 
         case 'toggle_event':
             $id = (int) ($_POST['event_db_id'] ?? 0);
@@ -48,10 +173,7 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $buyerName = trim($_POST['buyer_name'] ?? '');
             $buyerEmail = trim($_POST['buyer_email'] ?? '');
             $rawTicketId = trim($_POST['ticket_id'] ?? '');
-            
-            // FIX 1: Correctly evaluate unchecked checkboxes as 0
             $isPaid = isset($_POST['is_paid']) ? 1 : 0;
-            
             $assignedBy = $_SESSION['admin_name'] ?? 'Admin';
             $selectedCells = array_filter(array_map('trim', explode(',', $_POST['selected_cells'] ?? '')));
 
@@ -63,7 +185,6 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                 return '❌ Please select at least one cell from the grid or use Quick Random.';
             }
 
-            // Generate batch/order ID for grouping multi-cell purchases
             $batchId = $rawTicketId ?: ('MANUAL-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 6)));
 
             $db->beginTransaction();
@@ -96,7 +217,6 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                     ]);
                     $assignedList[] = strtoupper($cell);
                 } catch (PDOException $e) {
-                    // FIX 2: Distinguish duplicate ticket errors from cell collisions & DB errors
                     $isDuplicate = ($e->errorInfo[1] ?? null) === 1062
                         || strpos($e->getMessage(), '1062') !== false
                         || strpos($e->getMessage(), 'Duplicate entry') !== false;
@@ -107,11 +227,10 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                     }
 
                     if (strpos($e->getMessage(), 'unique_ticket_per_event') !== false) {
-						$db->rollBack();
-						return "❌ Ticket/Ref <strong>" . htmlspecialchars($ticketId) . "</strong> is already assigned to a cell. Each square requires a unique ticket ID. To assign multiple squares to this buyer, select them together on the grid above, or leave the reference blank to auto-generate.";
-					}
+                        $db->rollBack();
+                        return "❌ Ticket/Ref <strong>" . htmlspecialchars($ticketId) . "</strong> is already assigned to a cell. Each square requires a unique ticket ID. To assign multiple squares to this buyer, select them together on the grid above, or leave the reference blank to auto-generate.";
+                    }
 
-                    // Genuine cell collision (unique_cell_per_event)
                     $hasCollision = true;
                     $collisionCell = $cell;
                     break;
@@ -145,22 +264,17 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                 $ticket = htmlspecialchars($cell['ticket_id']);
                 $orderId = $cell['order_id'] ?? '';
 
-                // FIX 3: Only ping hi.events if this was an actual external order (not a local MANUAL- or CASH- batch)
-                $isExternalHiEventsOrder = !empty($orderId) 
-                    && strpos($orderId, 'MANUAL-') !== 0 
-                    && strpos($orderId, 'CASH-') !== 0;
+                $isExternalOrder = !empty($orderId) && strpos($orderId, 'MANUAL-') !== 0 && strpos($orderId, 'CASH-') !== 0;
 
-                if ($isExternalHiEventsOrder && function_exists('cancelHiEventsOrder')) {
+                if ($isExternalOrder && function_exists('cancelHiEventsOrder') && (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED)) {
                     $subject = "Ticket Cancellation Notice - Payment Not Received";
                     $body = "Hi {$cell['buyer_name']},\n\nYour Cow Bingo square reservation (Ticket: {$cell['ticket_id']}) has been cancelled as payment was not received.\n\nThank you.";
-                    if (function_exists('messageHiEventsOrder')) {
-                        messageHiEventsOrder($cell['hievents_event_id'], $orderId, $subject, $body);
-                    }
+                    if (function_exists('messageHiEventsOrder')) messageHiEventsOrder($cell['hievents_event_id'], $orderId, $subject, $body);
                     cancelHiEventsOrder($cell['hievents_event_id'], $orderId);
                 }
 
                 $db->prepare("DELETE FROM cow_bingo_cells WHERE id = ?")->execute([$cellId]);
-                return "✅ Cancelled square for <strong>{$buyer}</strong> (Ticket: {$ticket}). Square returned to the paddock.";
+                return "✅ Cancelled square for <strong>{$buyer}</strong> (Ticket: {$ticket}). Square returned to paddock.";
             }
             return '❌ Cell not found.';
 
@@ -190,6 +304,7 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $evStmt->execute([$eventDbId]);
             $ev = $evStmt->fetch(PDO::FETCH_ASSOC);
             if (!$ev) return '❌ Event not found.';
+            if (empty($ev['hievents_event_id'])) return '⚠️ This is a standalone event not yet linked to Hi.Events.';
             $synced = syncAttendeesFromHiEvents($db, $ev);
             return "✅ Sync complete. $synced new cells assigned.";
 
@@ -227,3 +342,4 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
     }
     return '';
 }
+

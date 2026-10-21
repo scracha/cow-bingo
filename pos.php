@@ -1,9 +1,10 @@
 <?php
 /**
- * Cow Bingo - Field POS / iPad Seller Interface with Interactive Grid & Discounts
+ * Cow Bingo - Field POS / iPad Seller Interface with Interactive Grid & Cached Discounts
  */
 require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/includes/bingo_helpers.php'; // <-- ADD THIS
+require_once __DIR__ . '/includes/bingo_helpers.php';
+
 session_start();
 
 $db = getDbConnection();
@@ -17,7 +18,7 @@ $adminId = (int)$_SESSION['admin_id'];
 $adminName = $_SESSION['admin_name'] ?? 'iPad';
 $isSuperAdmin = $_SESSION['is_super_admin'] ?? false;
 
-// Determine event
+// Determine active event for this device
 if ($isSuperAdmin) {
     $evStmt = $db->query("SELECT * FROM cow_bingo_events WHERE is_active = 1 ORDER BY id DESC LIMIT 1");
     $event = $evStmt->fetch(PDO::FETCH_ASSOC);
@@ -37,33 +38,48 @@ if (!$event) {
 }
 
 $eventId = (int)$event['id'];
-$hieventsId = $event['hievents_event_id'];
+$hieventsId = $event['hievents_event_id'] ?? null;
 $lastAssigned = null;
 $errorMessage = '';
 
-// 1. Fetch products & bulk tiers from hi.events (fallback to standard if none configured)
-$rawProducts = function_exists('fetchHiEventsProducts') ? fetchHiEventsProducts($hieventsId) : [];
+// 1. Resolve Pricing Tiers (DB Cache -> hi.events API -> Fallback)
 $pricingTiers = [];
 
-foreach ($rawProducts as $p) {
-    $title = strtolower($p['title'] ?? $p['name'] ?? '');
-    $price = (float)($p['price'] ?? 0);
-    // Detect bundle sizes from title (e.g., "5 Squares", "3 Pack", "Single")
-    if (preg_match('/(\d+)\s*(square|ticket|pack)/i', $title, $matches)) {
-        $qty = (int)$matches[1];
-    } elseif (strpos($title, 'single') !== false || strpos($title, '1') !== false) {
-        $qty = 1;
-    } else {
-        $qty = 1;
+// A. Check database-stored tiers first
+if (!empty($event['pricing_tiers'])) {
+    $decoded = json_decode($event['pricing_tiers'], true);
+    if (is_array($decoded) && !empty($decoded)) {
+        $pricingTiers = $decoded;
     }
-    $pricingTiers[$qty] = $price;
 }
 
-// Fallback pricing if hi.events products aren't configured with bundles
-if (empty($pricingTiers)) {
-    $pricingTiers = [1 => 10.00, 3 => 25.00, 5 => 40.00, 10 => 70.00];
+// B. If not in DB, and hi.events is linked & online, fetch and cache it into DB
+if (empty($pricingTiers) && !empty($hieventsId) && (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED) && function_exists('fetchHiEventsProducts')) {
+    $rawProducts = fetchHiEventsProducts($hieventsId);
+    foreach ($rawProducts as $p) {
+        $title = strtolower($p['title'] ?? $p['name'] ?? '');
+        $price = (float)($p['price'] ?? 0);
+        if (preg_match('/(\d+)\s*(square|ticket|pack)/i', $title, $matches)) {
+            $qty = (int)$matches[1];
+        } elseif (strpos($title, 'single') !== false || strpos($title, '1') !== false) {
+            $qty = 1;
+        } else {
+            $qty = 1;
+        }
+        $pricingTiers[$qty] = $price;
+    }
+    // Cache to DB for future loads
+    if (!empty($pricingTiers)) {
+        $db->prepare("UPDATE cow_bingo_events SET pricing_tiers = ? WHERE id = ?")
+           ->execute([json_encode($pricingTiers), $eventId]);
+    }
 }
-krsort($pricingTiers); // Sort highest quantity first for greedy discount calculation
+
+// C. Final fallback
+if (empty($pricingTiers)) {
+    $pricingTiers = defined('DEFAULT_PRICING_TIERS') ? DEFAULT_PRICING_TIERS : [1 => 10.00, 3 => 25.00, 5 => 40.00, 10 => 70.00];
+}
+krsort($pricingTiers); // Sort highest quantity first for greedy bulk calculation
 
 // 2. Handle Multi-Cell Cash Assignment
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'field_assign') {
@@ -93,8 +109,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         foreach ($selectedCells as $cell) {
             $ticketId = $batchId . '-' . $i++;
             try {
-                $insertStmt->execute([$eventId, $ticketId, $batchId, $buyerName, $buyerContact, $cell, $adminName]);
-                $assignedList[] = $cell;
+                $insertStmt->execute([$eventId, $ticketId, $batchId, $buyerName, $buyerContact, strtoupper($cell), $adminName]);
+                $assignedList[] = strtoupper($cell);
             } catch (PDOException $e) {
                 $hasCollision = true;
                 break;
@@ -121,8 +137,18 @@ $gridCols = (int)$event['grid_cols'];
 $gridRows = (int)$event['grid_rows'];
 $colLetters = array_slice(range('A', 'Z'), 0, $gridCols);
 
+// Use shared helper to fetch bookings
 $allBookings = getEventBookings($db, $eventId);
 $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
+
+$recentStmt = $db->prepare("
+    SELECT cell_reference, buyer_name, ticket_id, created_at 
+    FROM cow_bingo_cells 
+    WHERE event_id = ? AND assigned_by = ? 
+    ORDER BY id DESC LIMIT 5
+");
+$recentStmt->execute([$eventId, $adminName]);
+$recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -136,14 +162,13 @@ $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
         .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         .badge { background: #4a7c23; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }
         
-        /* Grid */
         .grid-container { background: white; padding: 10px; border-radius: 12px; overflow-x: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
         .grid { display: grid; grid-template-columns: 24px repeat(<?= $gridCols ?>, minmax(36px, 1fr)); gap: 3px; }
         .header-cell { color: #666; font-size: 11px; font-weight: bold; display: flex; align-items: center; justify-content: center; }
         .cell {
             aspect-ratio: 1; border-radius: 4px; font-size: 11px; font-weight: bold;
             display: flex; align-items: center; justify-content: center; user-select: none;
-            background: #7bc67b; border: 1px solid #5aa35a; color: #1e461e;
+            background: #7bc67b; border: 1px solid #5aa35a; color: #1e461e; cursor: pointer;
         }
         .cell.sold { background: #e0a37e; border-color: #ba7c57; color: #5a2e12; opacity: 0.6; pointer-events: none; }
         .cell.selected {
@@ -151,12 +176,10 @@ $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
             transform: scale(1.08); z-index: 2; box-shadow: 0 0 8px rgba(255, 193, 7, 0.8);
         }
         
-        /* Quick pick bar */
         .quick-pick { display: flex; gap: 8px; margin: 12px 0; overflow-x: auto; align-items: center; }
         .quick-btn { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 8px 14px; border-radius: 20px; font-weight: bold; font-size: 0.85em; cursor: pointer; white-space: nowrap; }
         .quick-btn:active { background: #ffc107; color: #000; }
 
-        /* Sticky Bottom Checkout Tray */
         .checkout-tray {
             position: fixed; bottom: 0; left: 0; right: 0; background: #ffffff; color: #222;
             padding: 12px 16px; box-shadow: 0 -4px 20px rgba(0,0,0,0.4); border-top-left-radius: 16px; border-top-right-radius: 16px; z-index: 100;
@@ -170,13 +193,14 @@ $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
 
         .banner-success { background: #d4edda; color: #155724; border: 2px solid #28a745; padding: 12px; border-radius: 8px; margin-bottom: 10px; text-align: center; }
         .banner-error { background: #f8d7da; color: #721c24; border: 2px solid #dc3545; padding: 12px; border-radius: 8px; margin-bottom: 10px; text-align: center; }
+        .recent-sales { margin-top: 15px; font-size: 0.85em; opacity: 0.9; }
     </style>
 </head>
 <body>
 
 <div class="top-bar">
     <span class="badge">📱 <?= htmlspecialchars($adminName) ?></span>
-    <span style="font-size:0.9em;">Tap squares below or use quick random:</span>
+    <span style="font-size:0.9em;">Tap squares or use quick random:</span>
     <a href="admin.php?logout" style="color:#ffc107;text-decoration:none;font-size:0.85em;">Logout</a>
 </div>
 
@@ -193,7 +217,7 @@ $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
 
 <!-- Quick Random Selectors -->
 <div class="quick-pick">
-    <span style="font-size:0.8em;opacity:0.8;">🎲 Quick Random:</span>
+    <span style="font-size:0.8em;opacity:0.8;">🎲 Quick:</span>
     <button type="button" class="quick-btn" onclick="addRandomSquares(1)">+1 Random</button>
     <button type="button" class="quick-btn" onclick="addRandomSquares(3)">+3 Random</button>
     <button type="button" class="quick-btn" onclick="addRandomSquares(5)">+5 Random</button>
@@ -224,7 +248,18 @@ $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
     </div>
 </div>
 
-<!-- Sticky Checkout Bar -->
+<?php if (!empty($recentSales)): ?>
+<div class="recent-sales">
+    <strong>Recent Sales on this device:</strong>
+    <?php foreach ($recentSales as $s): ?>
+        <span style="background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;margin-right:5px;display:inline-block;margin-top:4px;">
+            <?= htmlspecialchars($s['cell_reference']) ?> (<?= htmlspecialchars($s['buyer_name']) ?>)
+        </span>
+    <?php endforeach; ?>
+</div>
+<?php endif; ?>
+
+<!-- Sticky Bottom Checkout Bar -->
 <div class="checkout-tray">
     <form method="POST" id="posForm" autocomplete="off">
         <input type="hidden" name="action" value="field_assign">
@@ -244,7 +279,7 @@ $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
 </div>
 
 <script>
-    const pricingTiers = <?= json_encode($pricingTiers) ?>; // e.g. {10: 70, 5: 40, 3: 25, 1: 10}
+    const pricingTiers = <?= json_encode($pricingTiers) ?>;
     let selected = new Set();
 
     function toggleCell(el) {
@@ -280,7 +315,6 @@ $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
         updateTotals();
     }
 
-    // Bulk discount calculator: greedily applies largest package first
     function calculateBulkPrice(qty) {
         if (qty === 0) return 0.00;
         let total = 0;

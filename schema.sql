@@ -8,13 +8,14 @@ USE cow_bingo;
 -- Events table: one row per cow bingo game
 CREATE TABLE IF NOT EXISTS cow_bingo_events (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    hievents_event_id VARCHAR(100) UNIQUE NOT NULL,  -- the event ID from hi.events
+    hievents_event_id VARCHAR(100) UNIQUE DEFAULT NULL,  -- NULL = standalone / offline game
     event_name VARCHAR(255) NOT NULL,
     event_slug VARCHAR(255) DEFAULT NULL,             -- slug for public URL
     event_start DATETIME DEFAULT NULL,               -- event start date/time
     event_venue VARCHAR(255) DEFAULT NULL,            -- venue name
     grid_cols INT NOT NULL DEFAULT 16,
     grid_rows INT NOT NULL DEFAULT 16,
+    pricing_tiers TEXT DEFAULT NULL,                  -- JSON string of {qty: price} tiers
     is_active TINYINT(1) DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
