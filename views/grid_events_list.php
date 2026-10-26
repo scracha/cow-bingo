@@ -5,7 +5,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title><?= htmlspecialchars(SITE_TITLE) ?> - Events</title>
     <style>
         body {
@@ -44,7 +44,6 @@
                 <h2><?= htmlspecialchars($ev['event_name']) ?></h2>
                 <div class="meta"><?= $ev['grid_cols'] ?>x<?= $ev['grid_rows'] ?> grid &bull; <?= $ev['sold_count'] ?>/<?= $total ?> sold</div>
             </div>
-            <!-- Unambiguous local ID link -->
             <a href="?id=<?= $ev['id'] ?>">View Grid</a>
         </div>
         <?php endforeach; ?>

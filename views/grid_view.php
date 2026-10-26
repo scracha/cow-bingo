@@ -6,7 +6,7 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title><?= htmlspecialchars($eventName) ?> - Cow Bingo</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -36,9 +36,17 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         .buy-link .number { color: white; }
         .buy-link .label { color: rgba(255,255,255,0.9); font-weight: bold; }
         .buy-link:hover { background: #3d6b20 !important; transform: scale(1.05); }
+        .btn-print-judges {
+            background: #ffffff; border: 1.5px solid #2d5016; border-radius: 8px;
+            padding: 10px 16px; font-weight: bold; color: #2d5016; cursor: pointer;
+            display: inline-flex; align-items: center; gap: 6px; font-size: 0.9em;
+        }
+        .btn-print-judges:hover { background: #f0fdf4; }
+
         .grid-wrapper {
             background: rgba(255,255,255,0.95); border-radius: 12px;
             padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
         }
         .grid-header {
             display: grid;
@@ -68,17 +76,44 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
             background-color: #e8a87c; border-color: #d4845a; color: #6b3a1a; cursor: pointer;
         }
         .cell.winner {
-            background-color: #ffd700; border-color: #daa520; color: #5c4a00;
+            background: radial-gradient(circle, #fffbeb 10%, #fde047 55%, #eab308 100%) !important;
+            border: 2px solid #854d0e !important;
+            position: relative;
+            display: flex;
+            align-items: center;
+            justify-content: center;
             animation: winner-glow 2s ease-in-out infinite;
         }
-        .cell.winner .poo-icon { width: 100%; height: 100%; pointer-events: none; border: none; }
+        .cell.winner .winner-ref {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            font-size: 9px;
+            font-weight: 900;
+            color: #713f12;
+            background: rgba(255, 255, 255, 0.85);
+            padding: 0 3px;
+            border-radius: 2px;
+            line-height: 1.1;
+            pointer-events: none;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+        }
+        .cell.winner .poo-icon {
+            width: 78%;
+            height: 78%;
+            max-width: 32px;
+            max-height: 32px;
+            object-fit: contain;
+            pointer-events: none;
+            filter: drop-shadow(0 2px 3px rgba(0,0,0,0.4));
+        }
         @keyframes winner-glow {
-            0%, 100% { box-shadow: 0 0 6px rgba(255, 215, 0, 0.6); }
-            50% { box-shadow: 0 0 14px rgba(255, 215, 0, 1); }
+            0%, 100% { box-shadow: 0 0 6px rgba(202, 138, 4, 0.7); }
+            50% { box-shadow: 0 0 16px rgba(234, 179, 8, 1); }
         }
         .cell:hover { transform: scale(1.1); z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
         .cell.taken:hover { background-color: #f0b88a; }
-        .cell.winner:hover { background-color: #ffe44d; }
+        .cell.winner:hover { background: radial-gradient(circle, #ffffff 10%, #fef08a 55%, #facc15 100%) !important; }
 
         .cell.taken.admin-unpaid {
             background-image: repeating-linear-gradient(
@@ -106,7 +141,8 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         .legend-swatch { width: 18px; height: 18px; border-radius: 3px; border: 1px solid #999; }
         .legend-swatch.available { background-color: #7bc67b; border-color: #5aa35a; }
         .legend-swatch.sold { background-color: #e8a87c; border-color: #d4845a; }
-        .legend-swatch.winner { background-color: #ffd700; border-color: #daa520; }
+        .legend-swatch.winner { background: radial-gradient(circle, #fffbeb 10%, #fde047 55%, #eab308 100%); border-color: #854d0e; }
+        .legend-swatch.highlight { background-color: #e8a87c; border: 3px solid #ffd700; }
         .legend-swatch.admin-unpaid {
             background-color: #e8a87c;
             background-image: repeating-linear-gradient(45deg, rgba(220, 53, 69, 0.4), rgba(220, 53, 69, 0.4) 3px, transparent 3px, transparent 6px);
@@ -123,17 +159,14 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         .search-bar input {
             flex: 1; min-width: 200px; padding: 10px 14px;
             border: 2px solid #ddd; border-radius: 6px; font-size: 0.95em;
-            outline: none; transition: border-color 0.2s;
+            outline: none;
         }
-        .search-bar input:focus { border-color: #2d5016; }
         .search-bar button {
             padding: 10px 20px; border: none; border-radius: 6px;
             font-weight: bold; cursor: pointer; font-size: 0.9em;
         }
         #searchBtn { background: #2d5016; color: white; }
-        #searchBtn:hover { background: #3d6b20; }
         #clearBtn { background: #dc3545; color: white; }
-        #clearBtn:hover { background: #c82333; }
         #searchResult { font-size: 0.9em; color: #555; margin-left: 5px; }
 
         .cell.highlight {
@@ -148,13 +181,6 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
             50% { box-shadow: 0 0 20px rgba(255, 215, 0, 1); }
         }
         .cell.dimmed { opacity: 0.3; }
-        .legend-swatch.highlight { background-color: #e8a87c; border: 3px solid #ffd700; }
-
-        @media (max-width: 700px) {
-            .cell { min-width: 28px; font-size: 10px; }
-            header h1 { font-size: 1.5em; }
-            .grid-wrapper { padding: 10px; }
-        }
 
         .winners-summary {
             background: rgba(255,255,255,0.95); border-radius: 12px;
@@ -177,10 +203,40 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         }
         .winner-prize { font-weight: bold; color: #333; font-size: 1em; }
         .winner-name { color: #666; font-size: 0.9em; }
+
+        /* PRINT STYLES FOR PADDOCK JUDGES */
+        .print-only { display: none; }
+        @media print {
+            body { background: white !important; color: black !important; padding: 0 !important; }
+            .container { max-width: 100% !important; margin: 0 !important; width: 100% !important; }
+            header, .stats, .search-bar, .tooltip, .buy-link, .no-print { display: none !important; }
+            .grid-wrapper { box-shadow: none !important; padding: 0 !important; border: none !important; }
+            .cell {
+                border: 1px solid #222 !important;
+                background: transparent !important;
+                color: #000 !important;
+                box-shadow: none !important;
+                animation: none !important;
+            }
+            .cell.taken { background: #e5e5e5 !important; font-size: 9px !important; }
+            .cell.winner { font-weight: 900 !important; text-decoration: underline !important; }
+            .print-only { display: block !important; }
+            .print-judges-box {
+                margin-top: 25px;
+                border: 2px solid #000;
+                padding: 15px;
+                page-break-inside: avoid;
+            }
+        }
     </style>
 </head>
 <body>
 <div class="container">
+    <div class="no-print" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+        <a href="grid.php" style="color:white; text-decoration:none; font-weight:bold; font-size:0.9em;">&larr; Back to Events</a>
+        <button type="button" class="btn-print-judges" onclick="window.print()">📋 Print Judges Clipboard Sheet</button>
+    </div>
+
     <header>
         <h1><?= htmlspecialchars(SITE_TITLE) ?></h1>
         <p><?= htmlspecialchars($eventName) ?></p>
@@ -192,7 +248,7 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
             </p>
         <?php endif; ?>
     </header>
-    <div class="stats">
+    <div class="stats no-print">
         <div class="stat-box"><div class="number"><?= $soldCount ?></div><div class="label">Sold</div></div>
         <div class="stat-box"><div class="number"><?= $availableCount ?></div><div class="label">Available</div></div>
         <?php if ($hasHiEvents && $buyTicketsUrl): ?>
@@ -203,11 +259,17 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
     </div>
 
     <!-- Find My Cells search -->
-    <div class="search-bar">
+    <div class="search-bar no-print">
         <input type="text" id="searchInput" placeholder="🔍 Find my cells (enter your name or ticket ID)..." />
         <button id="searchBtn" onclick="findCells()">Find</button>
         <button id="clearBtn" onclick="clearSearch()" style="display:none;">Clear</button>
         <span id="searchResult"></span>
+    </div>
+
+    <!-- PRINT ONLY TITLE -->
+    <div class="print-only" style="margin-bottom:12px;">
+        <h2 style="margin:0;">🐄 <?= htmlspecialchars($eventName) ?> - Field Grid</h2>
+        <small>Generated: <?= date('d M Y, g:ia') ?> &bull; Sold: <?= $soldCount ?> / <?= $totalCells ?> squares</small>
     </div>
 
     <div class="grid-wrapper">
@@ -220,7 +282,7 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         <?php for ($row = 1; $row <= $gridRows; $row++): ?>
             <div class="grid-row">
                 <div class="row-label"><?= $row ?></div>
-                <?php foreach ($cols as $col):
+                <?php foreach ($cols as $col): 
                     $cellRef = $col . $row;
                     $isTaken = isset($bookings[$cellRef]);
                     $isWinner = $isTaken && !empty($bookings[$cellRef]['prize']);
@@ -242,11 +304,18 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
                         );
                     }
                 ?>
-                    <div class="<?= $classes ?>" <?= $dataAttrs ?>><?= $isWinner ? '<object data="cow_poo_2.svg" type="image/svg+xml" class="poo-icon"></object>' : $cellRef ?></div>
+                    <div class="<?= $classes ?>" <?= $dataAttrs ?>>
+                        <?php if ($isWinner): ?>
+                            <span class="winner-ref"><?= $cellRef ?></span>
+                            <img src="cow_poo_2.svg" class="poo-icon" alt="Winner <?= $cellRef ?>">
+                        <?php else: ?>
+                            <?= $cellRef ?>
+                        <?php endif; ?>
+                    </div>
                 <?php endforeach; ?>
             </div>
         <?php endfor; ?>
-        <div class="legend">
+        <div class="legend no-print">
             <div class="legend-item"><div class="legend-swatch available"></div><span>Available</span></div>
             <div class="legend-item"><div class="legend-swatch sold"></div><span>Sold</span></div>
             <div class="legend-item"><div class="legend-swatch winner"></div><span>Winner <img src="cow_poo_2.svg" style="width:36px;height:36px;vertical-align:middle;"></span></div>
@@ -257,8 +326,26 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         </div>
     </div>
 
+    <!-- PRINT ONLY JUDGES SIGN-OFF -->
+    <div class="print-only print-judges-box">
+        <h3 style="margin-top:0; border-bottom:1px solid #000; padding-bottom:4px;">🐄 Official Paddock Judges Sign-Off</h3>
+        <table style="width:100%; border:none; margin-top:10px; font-size:12px;">
+            <tr>
+                <td style="width:50%; padding:8px 0;"><strong>Lead Judge Signature:</strong> ____________________________________</td>
+                <td style="width:50%; padding:8px 0;"><strong>Time of Drop:</strong> ___________________</td>
+            </tr>
+            <tr>
+                <td style="padding:8px 0;"><strong>Scrutineer Signature:</strong> ___________________________________</td>
+                <td style="padding:8px 0;"><strong>Official Winning Cell:</strong> [ &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ]</td>
+            </tr>
+            <tr>
+                <td colspan="2" style="padding:8px 0;"><strong>Notes / Prize Awarded:</strong> __________________________________________________________________</td>
+            </tr>
+        </table>
+    </div>
+
     <?php if (!empty($winners)): ?>
-    <div class="winners-summary">
+    <div class="winners-summary no-print">
         <h2><img src="cow_poo_2.svg" style="width:56px;height:56px;vertical-align:middle;"> Winners</h2>
         <div class="winners-list">
             <?php foreach ($winners as $ref => $w): ?>
@@ -275,7 +362,7 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
     <?php endif; ?>
 </div>
 
-<div class="tooltip" id="tooltip"></div>
+<div class="tooltip no-print" id="tooltip"></div>
 <script>
     const tooltip = document.getElementById('tooltip');
     const allCells = document.querySelectorAll('.cell');
@@ -283,7 +370,7 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
 
     takenCells.forEach(cell => {
         cell.addEventListener('mouseenter', (e) => {
-            let html = `<strong>${cell.dataset.cell}</strong><br>🎫 Ticket: ${cell.dataset.ticket}<br>👤 ${cell.dataset.name}`;
+            let html = `<strong>${cell.dataset.cell}</strong><br>🎟 Ticket: ${cell.dataset.ticket}<br>👤 ${cell.dataset.name}`;
             
             <?php if ($isAdmin): ?>
             if (cell.dataset.paid === "0") {
@@ -346,12 +433,6 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         document.getElementById('searchResult').innerHTML = '';
         document.getElementById('clearBtn').style.display = 'none';
     }
-
-    document.querySelectorAll('.cell.winner .poo-icon').forEach((obj, i) => {
-        const src = obj.getAttribute('data');
-        obj.removeAttribute('data');
-        setTimeout(() => { obj.setAttribute('data', src); }, i * 400 + Math.random() * 600);
-    });
 </script>
 </body>
 </html>

@@ -9,7 +9,7 @@
  */
 
 require_once __DIR__ . '/config.php';
-require_once __DIR__ . '/includes/bingo_helpers.php'; // <-- ADD THIS
+require_once __DIR__ . '/includes/bingo_helpers.php';
 
 // Only accept POST requests
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
@@ -85,7 +85,7 @@ if (!$hieventsEventId) {
 
 // Look up the cow bingo event
 $eventStmt = $db->prepare(
-    "SELECT id, grid_cols, grid_rows, is_active FROM cow_bingo_events WHERE hievents_event_id = ?"
+    "SELECT id, grid_cols, grid_rows, pricing_tiers, is_active FROM cow_bingo_events WHERE hievents_event_id = ?"
 );
 $eventStmt->execute([$hieventsEventId]);
 $bingoEvent = $eventStmt->fetch(PDO::FETCH_ASSOC);
@@ -113,6 +113,12 @@ $cancelledStatuses = ['CANCELLED', 'CANCELED', 'REFUNDED', 'VOIDED', 'DELETED'];
 $unpaidStatuses = ['AWAITING_PAYMENT', 'PENDING', 'UNPAID', 'RESERVED'];
 $isPartialOrderCancel = false;
 
+// Load pricing tiers
+$pricingTiers = [];
+if (!empty($bingoEvent['pricing_tiers'])) {
+    $pricingTiers = json_decode($bingoEvent['pricing_tiers'], true) ?: [];
+}
+
 // --- 1. HANDLE PAYMENT STATUS UPDATES (order.marked_as_paid) ---
 if ($isPayment) {
     $orderCandidates = array_values(array_unique(array_filter([
@@ -125,8 +131,28 @@ if ($isPayment) {
 
     if (!empty($orderCandidates)) {
         $inPlaceholders = implode(',', array_fill(0, count($orderCandidates), '?'));
-        $db->prepare("UPDATE cow_bingo_cells SET is_paid = 1 WHERE event_id = ? AND order_id IN ($inPlaceholders)")
-           ->execute(array_merge([$bingoEventId], $orderCandidates));
+        $cellsStmt = $db->prepare("SELECT id, order_amount FROM cow_bingo_cells WHERE event_id = ? AND order_id IN ($inPlaceholders)");
+        $cellsStmt->execute(array_merge([$bingoEventId], $orderCandidates));
+        $foundCells = $cellsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (!empty($foundCells)) {
+            $count = count($foundCells);
+            $recordedAmount = (float)($foundCells[0]['order_amount'] ?? 0);
+            if ($recordedAmount <= 0) {
+                $payloadAmount = $data['total_gross'] ?? $data['order']['total_gross'] ?? null;
+                $recordedAmount = is_numeric($payloadAmount) ? (float)$payloadAmount : calculateBatchPrice($count, $pricingTiers);
+            }
+            $perSquare = round($recordedAmount / max(1, $count), 2);
+
+            $updStmt = $db->prepare("
+                UPDATE cow_bingo_cells 
+                SET is_paid = 1, 
+                    order_amount = COALESCE(order_amount, ?), 
+                    price_paid = ? 
+                WHERE event_id = ? AND order_id IN ($inPlaceholders)
+            ");
+            $updStmt->execute(array_merge([$recordedAmount, $perSquare, $bingoEventId], $orderCandidates));
+        }
     }
 
     $db->prepare("UPDATE webhook_log SET processed = 1 WHERE id = ?")->execute([$logId]);
@@ -195,8 +221,28 @@ if ($isCreation && stripos($eventType, 'order') !== false
 
     if (!empty($completedOrderIds)) {
         $ph = implode(',', array_fill(0, count($completedOrderIds), '?'));
-        $db->prepare("UPDATE cow_bingo_cells SET is_paid = 1 WHERE event_id = ? AND order_id IN ($ph)")
-           ->execute(array_merge([$bingoEventId], $completedOrderIds));
+        $cellsStmt = $db->prepare("SELECT id, order_amount FROM cow_bingo_cells WHERE event_id = ? AND order_id IN ($ph)");
+        $cellsStmt->execute(array_merge([$bingoEventId], $completedOrderIds));
+        $foundCells = $cellsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        if (!empty($foundCells)) {
+            $count = count($foundCells);
+            $recordedAmount = (float)($foundCells[0]['order_amount'] ?? 0);
+            if ($recordedAmount <= 0) {
+                $payloadAmount = $data['total_gross'] ?? $data['order']['total_gross'] ?? null;
+                $recordedAmount = is_numeric($payloadAmount) ? (float)$payloadAmount : calculateBatchPrice($count, $pricingTiers);
+            }
+            $perSquare = round($recordedAmount / max(1, $count), 2);
+
+            $updStmt = $db->prepare("
+                UPDATE cow_bingo_cells 
+                SET is_paid = 1, 
+                    order_amount = COALESCE(order_amount, ?), 
+                    price_paid = ? 
+                WHERE event_id = ? AND order_id IN ($ph)
+            ");
+            $updStmt->execute(array_merge([$recordedAmount, $perSquare, $bingoEventId], $completedOrderIds));
+        }
     }
 }
 
@@ -225,20 +271,34 @@ $defaultOrderId = (stripos($eventType, 'order') !== false)
     ? ($data['short_id'] ?? (isset($data['id']) ? (string)$data['id'] : null))
     : null;
 
+$rawOrderAmount = null;
+if (isset($data['total_gross']) && is_numeric($data['total_gross'])) {
+    $rawOrderAmount = (float)$data['total_gross'];
+} elseif (isset($data['order']['total_gross']) && is_numeric($data['order']['total_gross'])) {
+    $rawOrderAmount = (float)$data['order']['total_gross'];
+} elseif (isset($data['total_amount']) && is_numeric($data['total_amount'])) {
+    $rawOrderAmount = (float)$data['total_amount'];
+} elseif (isset($data['total']) && is_numeric($data['total'])) {
+    $rawOrderAmount = (float)$data['total'];
+}
+
+$attendeeCount = max(1, count($attendees));
+$calculatedOrderTotal = $rawOrderAmount !== null 
+    ? $rawOrderAmount 
+    : calculateBatchPrice($attendeeCount, $pricingTiers);
+$pricePerSquare = round($calculatedOrderTotal / $attendeeCount, 2);
+
 $anyFailed = false;
 
 foreach ($attendees as $attendee) {
     $status = strtoupper(trim($attendee['status'] ?? $data['status'] ?? ''));
 
-    // Skip already-cancelled attendees on creation events
     if ($isCreation && in_array($status, $cancelledStatuses, true)) {
         continue;
     }
 
-    // Determine Paid Status
     $isPaid = in_array($status, $unpaidStatuses, true) ? 0 : 1;
 
-    // Collect all candidate identifiers for this attendee
     $candidates = array_values(array_unique(array_filter([
         $attendee['short_id'] ?? null,
         $attendee['public_id'] ?? null,
@@ -274,14 +334,14 @@ foreach ($attendees as $attendee) {
     $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
     if ($existing) {
-        // If the ticket was already assigned but its payment status changed, update it
         if ((int)$existing['is_paid'] !== $isPaid) {
-            $db->prepare("UPDATE cow_bingo_cells SET is_paid = ? WHERE id = ?")->execute([$isPaid, $existing['id']]);
+            $paidUpdateAmount = $isPaid ? $pricePerSquare : 0.00;
+            $db->prepare("UPDATE cow_bingo_cells SET is_paid = ?, price_paid = ? WHERE id = ?")
+               ->execute([$isPaid, $paidUpdateAmount, $existing['id']]);
         }
         continue;
     }
 
-    // Strict order_id resolution
     $orderArray = is_array($attendee['order'] ?? null) ? $attendee['order'] : [];
     $rawOrderId = $orderArray['short_id'] 
         ?? ($attendee['order_id'] ?? null)
@@ -289,7 +349,6 @@ foreach ($attendees as $attendee) {
         ?? $defaultOrderId;
     $orderId = ($rawOrderId !== null && $rawOrderId !== '') ? (string)$rawOrderId : null;
 
-    // Buyer name & email
     $firstName = $attendee['first_name'] ?? $attendee['firstName'] ?? '';
     $lastName = $attendee['last_name'] ?? $attendee['lastName'] ?? '';
     $buyerName = trim($firstName . ' ' . $lastName);
@@ -298,8 +357,8 @@ foreach ($attendees as $attendee) {
     }
 
     $buyerEmail = $attendee['email'] ?? $attendee['buyer_email'] ?? $data['email'] ?? null;
+    $cellPricePaid = $isPaid ? $pricePerSquare : 0.00;
 
-    // Collision-protected cell assignment
     $assigned = false;
     $maxRetries = 5;
 
@@ -315,10 +374,21 @@ foreach ($attendees as $attendee) {
 
         try {
             $insertStmt = $db->prepare(
-                "INSERT INTO cow_bingo_cells (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO cow_bingo_cells 
+                 (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, order_amount, price_paid, payment_method, assigned_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'online', 'hi.events')"
             );
-            $insertStmt->execute([$bingoEventId, $ticketId, $orderId, $buyerName, $buyerEmail, $assignedCell, $isPaid]);
+            $insertStmt->execute([
+                $bingoEventId, 
+                $ticketId, 
+                $orderId, 
+                $buyerName, 
+                $buyerEmail, 
+                $assignedCell, 
+                $isPaid,
+                $calculatedOrderTotal,
+                $cellPricePaid
+            ]);
             $assigned = true;
             break;
         } catch (PDOException $e) {
@@ -346,11 +416,9 @@ foreach ($attendees as $attendee) {
     }
 }
 
-// Finalize log status
 $db->prepare("UPDATE webhook_log SET processed = ? WHERE id = ?")
    ->execute([$anyFailed ? 0 : 1, $logId]);
 
-// Signal hi.events to retry if assignment failed
 if ($anyFailed) {
     http_response_code(500);
     exit('Partial failure - retry requested');
@@ -358,4 +426,3 @@ if ($anyFailed) {
 
 http_response_code(200);
 echo 'OK';
-

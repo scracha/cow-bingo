@@ -5,7 +5,12 @@
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/includes/bingo_helpers.php';
 
-session_start();
+// 0. Session Keep-Alive Endpoint
+if (isset($_GET['ping'])) {
+    header('Content-Type: application/json');
+    echo json_encode(['status' => 'ok', 'time' => time()]);
+    exit;
+}
 
 $db = getDbConnection();
 
@@ -39,13 +44,13 @@ if (!$event) {
 
 $eventId = (int)$event['id'];
 $hieventsId = $event['hievents_event_id'] ?? null;
+$allowCellSelection = isset($event['allow_cell_selection']) ? (int)$event['allow_cell_selection'] : 1;
 $lastAssigned = null;
 $errorMessage = '';
 
-// 1. Resolve Pricing Tiers (DB Cache -> hi.events API -> Fallback)
+// 1. Resolve Pricing Tiers
 $pricingTiers = [];
 
-// A. Check database-stored tiers first
 if (!empty($event['pricing_tiers'])) {
     $decoded = json_decode($event['pricing_tiers'], true);
     if (is_array($decoded) && !empty($decoded)) {
@@ -53,7 +58,6 @@ if (!empty($event['pricing_tiers'])) {
     }
 }
 
-// B. If not in DB, and hi.events is linked & online, fetch and cache it into DB
 if (empty($pricingTiers) && !empty($hieventsId) && (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED) && function_exists('fetchHiEventsProducts')) {
     $rawProducts = fetchHiEventsProducts($hieventsId);
     foreach ($rawProducts as $p) {
@@ -68,66 +72,68 @@ if (empty($pricingTiers) && !empty($hieventsId) && (!defined('HIEVENTS_ENABLED')
         }
         $pricingTiers[$qty] = $price;
     }
-    // Cache to DB for future loads
     if (!empty($pricingTiers)) {
         $db->prepare("UPDATE cow_bingo_events SET pricing_tiers = ? WHERE id = ?")
            ->execute([json_encode($pricingTiers), $eventId]);
     }
 }
 
-// C. Final fallback
 if (empty($pricingTiers)) {
     $pricingTiers = defined('DEFAULT_PRICING_TIERS') ? DEFAULT_PRICING_TIERS : [1 => 10.00, 3 => 25.00, 5 => 40.00, 10 => 70.00];
 }
-krsort($pricingTiers); // Sort highest quantity first for greedy bulk calculation
+krsort($pricingTiers);
 
 // 2. Handle Multi-Cell Cash Assignment
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'field_assign') {
-    $buyerName = trim($_POST['buyer_name'] ?? '');
-    $buyerContact = trim($_POST['buyer_contact'] ?? '');
-    $selectedCells = array_filter(array_map('trim', explode(',', $_POST['selected_cells'] ?? '')));
-
-    if (empty($buyerName)) {
-        $errorMessage = 'Please enter the buyer\'s name.';
-    } elseif (empty($selectedCells)) {
-        $errorMessage = 'Please tap at least one square on the grid.';
+    if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
+        $errorMessage = 'Security session expired. Please reload the page.';
     } else {
-        $cleanDevice = preg_replace('/[^A-Za-z0-9]/', '', strtoupper($adminName));
-        $batchId = 'CASH-' . ($cleanDevice ?: 'IPAD') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 5));
-        
-        $db->beginTransaction();
-        $assignedList = [];
-        $hasCollision = false;
+        $buyerName = trim($_POST['buyer_name'] ?? '');
+        $buyerContact = trim($_POST['buyer_contact'] ?? '');
+        $selectedCells = array_filter(array_map('trim', explode(',', $_POST['selected_cells'] ?? '')));
 
-        $insertStmt = $db->prepare("
-            INSERT INTO cow_bingo_cells 
-            (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, assigned_by) 
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-        ");
-
-        $i = 1;
-        foreach ($selectedCells as $cell) {
-            $ticketId = $batchId . '-' . $i++;
-            try {
-                $insertStmt->execute([$eventId, $ticketId, $batchId, $buyerName, $buyerContact, strtoupper($cell), $adminName]);
-                $assignedList[] = strtoupper($cell);
-            } catch (PDOException $e) {
-                $hasCollision = true;
-                break;
-            }
-        }
-
-        if ($hasCollision) {
-            $db->rollBack();
-            $errorMessage = "⚠️ Square $cell was just taken by another seller! Please pick a different square.";
+        if (empty($buyerName)) {
+            $errorMessage = 'Please enter the buyer\'s name.';
+        } elseif (empty($selectedCells)) {
+            $errorMessage = 'Please select at least one square.';
         } else {
-            $db->commit();
-            $lastAssigned = [
-                'cells' => $assignedList,
-                'name' => $buyerName,
-                'batch' => $batchId,
-                'total' => $_POST['calculated_total'] ?? '0.00'
-            ];
+            $cleanDevice = preg_replace('/[^A-Za-z0-9]/', '', strtoupper($adminName));
+            $batchId = 'CASH-' . ($cleanDevice ?: 'IPAD') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 5));
+            
+            $db->beginTransaction();
+            $assignedList = [];
+            $hasCollision = false;
+
+            $insertStmt = $db->prepare("
+                INSERT INTO cow_bingo_cells 
+                (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, assigned_by) 
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+            ");
+
+            $i = 1;
+            foreach ($selectedCells as $cell) {
+                $ticketId = $batchId . '-' . $i++;
+                try {
+                    $insertStmt->execute([$eventId, $ticketId, $batchId, $buyerName, $buyerContact, strtoupper($cell), $adminName]);
+                    $assignedList[] = strtoupper($cell);
+                } catch (PDOException $e) {
+                    $hasCollision = true;
+                    break;
+                }
+            }
+
+            if ($hasCollision) {
+                $db->rollBack();
+                $errorMessage = "⚠️ Square $cell was just taken by another seller! Please pick a different square.";
+            } else {
+                $db->commit();
+                $lastAssigned = [
+                    'cells' => $assignedList,
+                    'name' => $buyerName,
+                    'batch' => $batchId,
+                    'total' => $_POST['calculated_total'] ?? '0.00'
+                ];
+            }
         }
     }
 }
@@ -137,7 +143,6 @@ $gridCols = (int)$event['grid_cols'];
 $gridRows = (int)$event['grid_rows'];
 $colLetters = array_slice(range('A', 'Z'), 0, $gridCols);
 
-// Use shared helper to fetch bookings
 $allBookings = getEventBookings($db, $eventId);
 $soldCells = array_column($allBookings, 'buyer_name', 'cell_reference');
 
@@ -149,12 +154,13 @@ $recentStmt = $db->prepare("
 ");
 $recentStmt->execute([$eventId, $adminName]);
 $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
+$csrfToken = getCsrfToken();
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title><?= htmlspecialchars($event['event_name']) ?> - iPad POS</title>
     <style>
         * { box-sizing: border-box; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
@@ -162,13 +168,20 @@ $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
         .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         .badge { background: #4a7c23; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }
         
-        .grid-container { background: white; padding: 10px; border-radius: 12px; overflow-x: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+        .mode-banner {
+            background: #fef3c7; color: #92400e; border: 1px solid #fcd34d;
+            padding: 8px 12px; border-radius: 8px; font-weight: bold; font-size: 0.88em;
+            margin-bottom: 10px; text-align: center;
+        }
+
+        .grid-container { background: white; padding: 10px; border-radius: 12px; overflow-x: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.3); -webkit-overflow-scrolling: touch; }
         .grid { display: grid; grid-template-columns: 24px repeat(<?= $gridCols ?>, minmax(36px, 1fr)); gap: 3px; }
         .header-cell { color: #666; font-size: 11px; font-weight: bold; display: flex; align-items: center; justify-content: center; }
         .cell {
             aspect-ratio: 1; border-radius: 4px; font-size: 11px; font-weight: bold;
             display: flex; align-items: center; justify-content: center; user-select: none;
-            background: #7bc67b; border: 1px solid #5aa35a; color: #1e461e; cursor: pointer;
+            background: #7bc67b; border: 1px solid #5aa35a; color: #1e461e;
+            cursor: <?= $allowCellSelection ? 'pointer' : 'default' ?>;
         }
         .cell.sold { background: #e0a37e; border-color: #ba7c57; color: #5a2e12; opacity: 0.6; pointer-events: none; }
         .cell.selected {
@@ -189,7 +202,7 @@ $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
         .inputs-row { display: flex; gap: 8px; }
         .inputs-row input { flex: 1; padding: 12px; border: 2px solid #ccc; border-radius: 8px; font-size: 1em; }
         .btn-confirm { background: #2d5016; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 1em; font-weight: bold; cursor: pointer; }
-        .btn-confirm:disabled { background: #aaa; }
+        .btn-confirm:disabled { background: #aaa; cursor: not-allowed; }
 
         .banner-success { background: #d4edda; color: #155724; border: 2px solid #28a745; padding: 12px; border-radius: 8px; margin-bottom: 10px; text-align: center; }
         .banner-error { background: #f8d7da; color: #721c24; border: 2px solid #dc3545; padding: 12px; border-radius: 8px; margin-bottom: 10px; text-align: center; }
@@ -200,9 +213,15 @@ $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
 
 <div class="top-bar">
     <span class="badge">📱 <?= htmlspecialchars($adminName) ?></span>
-    <span style="font-size:0.9em;">Tap squares or use quick random:</span>
+    <span style="font-size:0.9em;"><?= $allowCellSelection ? 'Tap squares or use quick random:' : 'Random Mode active:' ?></span>
     <a href="admin.php?logout" style="color:#ffc107;text-decoration:none;font-size:0.85em;">Logout</a>
 </div>
+
+<?php if (!$allowCellSelection): ?>
+    <div class="mode-banner">
+        🎲 <strong>Random Allocation Only Mode</strong> &mdash; Manual square tapping is disabled. Tap +1, +3, +5, or +10 below to assign tickets.
+    </div>
+<?php endif; ?>
 
 <?php if ($lastAssigned): ?>
     <div class="banner-success">
@@ -215,16 +234,15 @@ $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
     <div class="banner-error"><?= htmlspecialchars($errorMessage) ?></div>
 <?php endif; ?>
 
-<!-- Quick Random Selectors -->
 <div class="quick-pick">
     <span style="font-size:0.8em;opacity:0.8;">🎲 Quick:</span>
     <button type="button" class="quick-btn" onclick="addRandomSquares(1)">+1 Random</button>
     <button type="button" class="quick-btn" onclick="addRandomSquares(3)">+3 Random</button>
     <button type="button" class="quick-btn" onclick="addRandomSquares(5)">+5 Random</button>
+    <button type="button" class="quick-btn" onclick="addRandomSquares(10)">+10 Random</button>
     <button type="button" class="quick-btn" style="background:#dc3545;border:none;" onclick="clearSelected()">Clear</button>
 </div>
 
-<!-- Visual Paddock Grid -->
 <div class="grid-container">
     <div class="grid">
         <div class="header-cell"></div>
@@ -240,7 +258,7 @@ $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
             ?>
                 <div class="cell <?= $isSold ? 'sold' : 'available' ?>" 
                      data-cell="<?= $ref ?>" 
-                     onclick="toggleCell(this)">
+                     onclick="<?= $allowCellSelection ? 'toggleCell(this)' : '' ?>">
                     <?= $ref ?>
                 </div>
             <?php endforeach; ?>
@@ -259,9 +277,9 @@ $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
 </div>
 <?php endif; ?>
 
-<!-- Sticky Bottom Checkout Bar -->
 <div class="checkout-tray">
     <form method="POST" id="posForm" autocomplete="off">
+        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
         <input type="hidden" name="action" value="field_assign">
         <input type="hidden" name="selected_cells" id="selectedCellsInput" value="">
         <input type="hidden" name="calculated_total" id="calculatedTotalInput" value="0.00">
@@ -280,9 +298,27 @@ $recentSales = $recentStmt->fetchAll(PDO::FETCH_ASSOC);
 
 <script>
     const pricingTiers = <?= json_encode($pricingTiers) ?>;
+    const allowCellSelection = <?= $allowCellSelection ? 'true' : 'false' ?>;
     let selected = new Set();
 
+    setInterval(() => {
+        fetch('pos.php?ping=1').catch(() => {});
+    }, 180000);
+
+    document.getElementById('posForm').addEventListener('submit', function(e) {
+        const btn = document.getElementById('submitBtn');
+        if (btn.disabled || btn.dataset.submitting === '1') {
+            e.preventDefault();
+            return false;
+        }
+        btn.dataset.submitting = '1';
+        btn.disabled = true;
+        btn.textContent = 'Recording Cash... ⏳';
+        return true;
+    });
+
     function toggleCell(el) {
+        if (!allowCellSelection) return;
         if (el.classList.contains('sold')) return;
         const ref = el.dataset.cell;
         if (selected.has(ref)) {

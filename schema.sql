@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS cow_bingo_events (
     grid_cols INT NOT NULL DEFAULT 16,
     grid_rows INT NOT NULL DEFAULT 16,
     pricing_tiers TEXT DEFAULT NULL,                  -- JSON string of {qty: price} tiers
+    allow_cell_selection TINYINT(1) NOT NULL DEFAULT 1,
     is_active TINYINT(1) DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -30,6 +31,9 @@ CREATE TABLE IF NOT EXISTS cow_bingo_cells (
     buyer_email VARCHAR(255) DEFAULT NULL,
     cell_reference VARCHAR(5) NOT NULL,             -- e.g. 'C13'
     is_paid TINYINT(1) NOT NULL DEFAULT 1,
+    order_amount DECIMAL(10,2) DEFAULT NULL,         -- Total transaction/batch amount
+    price_paid DECIMAL(10,2) DEFAULT NULL,           -- Allocated amount for this square
+    payment_method VARCHAR(50) DEFAULT 'cash',       -- 'cash', 'online', 'manual'
     assigned_by VARCHAR(100) NULL DEFAULT 'hi.events', -- 'hi.events', admin name, or iPad label
     prize VARCHAR(255) DEFAULT NULL,                -- e.g. '1st Prize', 'Free Cake'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -69,6 +73,23 @@ CREATE TABLE IF NOT EXISTS cow_bingo_login_attempts (
     ip_address VARCHAR(45) NOT NULL,
     attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_ip_time (ip_address, attempted_at)
+) ENGINE=InnoDB;
+
+-- Audit log: captures cell removals, cancellations, payments, prizes, and purges
+CREATE TABLE IF NOT EXISTS cow_bingo_audit_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    event_id INT NOT NULL,
+    action VARCHAR(50) NOT NULL,
+    cell_reference VARCHAR(255) DEFAULT NULL,
+    ticket_id VARCHAR(100) DEFAULT NULL,
+    order_id VARCHAR(100) DEFAULT NULL,
+    buyer_name VARCHAR(255) DEFAULT NULL,
+    amount DECIMAL(10,2) DEFAULT NULL,
+    details TEXT DEFAULT NULL,
+    performed_by VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_audit_event (event_id, created_at),
+    FOREIGN KEY (event_id) REFERENCES cow_bingo_events(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
 -- Log table to capture raw webhook payloads for debugging

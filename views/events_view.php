@@ -1,5 +1,6 @@
 <?php
 // views/events_view.php
+$csrfToken = getCsrfToken();
 
 if ($isSuperAdmin): 
     $hiEventsEnabled = !defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED;
@@ -17,13 +18,14 @@ if ($isSuperAdmin):
             <li><strong>Option B: Standalone / Offline (Cash &amp; iPads Only)</strong><br>
                 Leave the Hi.Events field blank. Enter a name, grid size, and cash pricing tiers below. You can link a hi.events ID later if desired.</li>
             <li><strong>Field Sellers (iPads)</strong><br>
-                Under <em>Manage Admins &amp; iPad Sellers</em> below, create accounts with the role <strong>iPad / Cash Seller</strong>. <button type="button" class="btn-help-inline" onclick="openIpadModal()">View iPad setup walkthrough</button>.</li>
+                Under <em>Manage Admins &amp; iPad Sellers</em>, create accounts with the role <strong>iPad / Cash Seller</strong>. <button type="button" class="btn-help-inline" onclick="openIpadModal()">View iPad setup walkthrough</button>.</li>
         </ol>
     </details>
 </div>
 
 <h2>Create New Cow Bingo Event</h2>
 <form method="POST">
+    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
     <input type="hidden" name="action" value="create_event">
     <div class="form-group">
         <label>Hi.Events Event:</label>
@@ -84,7 +86,6 @@ function updateEventName() {
         <?php foreach ($events as $ev): 
             $total = $ev['grid_cols'] * $ev['grid_rows'];
             $hasHiEvents = !empty($ev['hievents_event_id']);
-            $gridParam = $hasHiEvents ? $ev['hievents_event_id'] : $ev['id'];
         ?>
         <tr>
             <td><?= $ev['id'] ?></td>
@@ -94,6 +95,7 @@ function updateEventName() {
                 <?php else: ?>
                     <span style="background:#e2e3e5;color:#383d41;padding:2px 6px;border-radius:4px;font-size:0.8em;font-weight:bold;">Offline</span>
                     <form method="POST" class="inline" style="margin-left:4px;">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                         <input type="hidden" name="action" value="link_hievents">
                         <input type="hidden" name="event_db_id" value="<?= $ev['id'] ?>">
                         <input type="text" name="hievents_event_id" placeholder="ID #" style="padding:2px 5px;font-size:0.75em;width:45px;" required>
@@ -106,11 +108,12 @@ function updateEventName() {
             <td><?= $ev['sold_count'] ?>/<?= $total ?></td>
             <td><?= $ev['is_active'] ? '✅' : '❌' ?></td>
             <td>
-                <a class="btn" href="?view=<?= $ev['id'] ?>">View Cells</a>
+                <a class="btn" href="?tab=cells&view=<?= $ev['id'] ?>">View Cells</a>
                 <a class="btn" href="grid.php?id=<?= $ev['id'] ?>" target="_blank">Grid</a>
                 
                 <?php if ($hasHiEvents): ?>
                     <form method="POST" class="inline">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                         <input type="hidden" name="action" value="sync_attendees">
                         <input type="hidden" name="event_db_id" value="<?= $ev['id'] ?>">
                         <button type="submit" class="primary" style="font-size:0.8em;padding:5px 10px;" onclick="return confirm('Sync attendees from hi.events?')">Sync</button>
@@ -118,6 +121,7 @@ function updateEventName() {
                 <?php endif; ?>
 
                 <form method="POST" class="inline">
+                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                     <input type="hidden" name="action" value="toggle_event">
                     <input type="hidden" name="event_db_id" value="<?= $ev['id'] ?>">
                     <button type="submit" class="warning"><?= $ev['is_active'] ? 'Deactivate' : 'Activate' ?></button>

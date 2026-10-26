@@ -9,6 +9,9 @@ function canManageEvent(PDO $db, int $adminId, int $eventId): bool {
     return (bool) $stmt->fetch();
 }
 
+/**
+ * Sync Attendees from Hi.Events (Safe: Never demotes locally paid cells back to unpaid)
+ */
 function syncAttendeesFromHiEvents(PDO $db, array $event): int {
     $token = getHiEventsToken();
     if (!$token) return 0;
@@ -54,8 +57,9 @@ function syncAttendeesFromHiEvents(PDO $db, array $event): int {
             $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
             if ($existing) {
-                if ((int)$existing['is_paid'] !== $isPaid) {
-                    $db->prepare("UPDATE cow_bingo_cells SET is_paid = ? WHERE id = ?")->execute([$isPaid, $existing['id']]);
+                // Only upgrade 0 -> 1; never revert a locally paid square back to unpaid
+                if ((int)$existing['is_paid'] === 0 && $isPaid === 1) {
+                    $db->prepare("UPDATE cow_bingo_cells SET is_paid = 1 WHERE id = ?")->execute([$existing['id']]);
                 }
                 continue;
             }
@@ -65,7 +69,6 @@ function syncAttendeesFromHiEvents(PDO $db, array $event): int {
             $buyerEmail = $attendee['email'] ?? null;
             $orderId = $attendee['order']['short_id'] ?? $attendee['order_id'] ?? null;
 
-            // Updated function name
             $cell = assignRandomCell($db, $eventDbId, $gridCols, $gridRows);
             if (!$cell) break 2;
 
@@ -78,4 +81,28 @@ function syncAttendeesFromHiEvents(PDO $db, array $event): int {
     } while ($page <= $lastPage);
 
     return $synced;
+}
+
+/**
+ * Helper: Synchronize local cash payment to Hi.Events order
+ */
+function markHiEventsOrderAsPaid(string $hieventsEventId, string $orderId): bool {
+    if (defined('HIEVENTS_ENABLED') && !HIEVENTS_ENABLED) return false;
+    $token = getHiEventsToken();
+    if (!$token) return false;
+
+    $url = HIEVENTS_BASE_URL . "/api/events/$hieventsEventId/orders/$orderId/mark-as-paid";
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode(['payment_method' => 'cash']),
+        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token, 'Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 5,
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    return ($httpCode >= 200 && $httpCode < 300);
 }

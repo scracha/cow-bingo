@@ -33,6 +33,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $_SESSION['admin_name'] = $user['display_name'];
             $_SESSION['is_super_admin'] = (bool) $user['is_super_admin'];
             $_SESSION['admin_role'] = $user['role'] ?? ($user['is_super_admin'] ? 'super_admin' : 'event_admin');
+            // Always initialize fresh CSRF token upon successful authentication
+            $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
 
             $db->prepare("DELETE FROM cow_bingo_login_attempts WHERE ip_address = ?")->execute([$ip]);
 
