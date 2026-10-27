@@ -1,428 +1,377 @@
 <?php
-/**
- * Cow Bingo - Webhook Receiver (Multi-Event)
- * 
- * Configure this URL in your hi.events webhook settings:
- * https://your-server.com/cow-bingo/webhook.php
- * 
- * Trigger on: Order Completed / Created / Cancelled, Attendee Created / Cancelled
- */
+// webhook.php - Hi.Events Incoming Webhook Receiver
 
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/includes/bingo_helpers.php';
+require_once __DIR__ . '/includes/admin_helpers.php';
 
-// Only accept POST requests
+$db = getDbConnection();
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     http_response_code(405);
     exit('Method Not Allowed');
 }
 
-// Read the raw payload
+$clientIp = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
 $rawPayload = file_get_contents('php://input');
+
+// ----------------------------------------------------------------------------
+// 1. Rate Limiting on Webhook Submissions
+// ----------------------------------------------------------------------------
+try {
+    $rateStmt = $db->prepare("
+        SELECT COUNT(*) 
+        FROM webhook_log 
+        WHERE created_at > DATE_SUB(NOW(), INTERVAL 1 MINUTE) 
+          AND ip_address = ?
+    ");
+    $rateStmt->execute([$clientIp]);
+    if ((int)$rateStmt->fetchColumn() > 100) {
+        http_response_code(429);
+        exit('Too Many Requests');
+    }
+} catch (\Throwable $e) {
+    // Gracefully continue if ip_address column is not yet migrated
+}
+
+// ----------------------------------------------------------------------------
+// 2. Authentication / Signature Verification
+// ----------------------------------------------------------------------------
+$secret = defined('WEBHOOK_SECRET') ? WEBHOOK_SECRET : '';
+if ($secret !== '') {
+    $signature = $_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? '';
+    $querySecret = $_GET['secret'] ?? '';
+
+    $verified = false;
+    if ($signature !== '') {
+        $expected = hash_hmac('sha256', $rawPayload, $secret);
+        $verified = hash_equals($expected, $signature);
+    } elseif ($querySecret !== '') {
+        $verified = hash_equals($secret, $querySecret);
+    }
+
+    if (!$verified) {
+        http_response_code(403);
+        exit('Unauthorized: Invalid or missing webhook signature/secret');
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 3. Payload Parsing & Unwrapping
+// ----------------------------------------------------------------------------
 $payload = json_decode($rawPayload, true);
+if (!is_array($payload)) {
+    http_response_code(400);
+    exit('Invalid JSON payload');
+}
 
-$db = getDbConnection();
+$rawEventType = $payload['event_type'] ?? $payload['type'] ?? '';
+$eventType = strtolower(trim($rawEventType));
 
-// Determine event type from payload
-$eventType = $payload['event_type'] ?? $payload['type'] ?? 'unknown';
-
-// Extract the resource data (hi.events sends data inside 'payload'; fallback to 'data')
 $data = $payload['payload'] ?? $payload['data'] ?? $payload;
-
-// Extract the hi.events event ID
 $hieventsEventId = $data['event_id']
     ?? $data['order']['event_id']
     ?? $data['event']['id']
     ?? $payload['event_id']
     ?? null;
 
-// Log the raw webhook for debugging
-$logStmt = $db->prepare(
-    "INSERT INTO webhook_log (hievents_event_id, payload, event_type) VALUES (?, ?, ?)"
-);
-$logStmt->execute([$hieventsEventId, $rawPayload, $eventType]);
-$logId = $db->lastInsertId();
-
-// Validate payload
-if (!$payload) {
-    http_response_code(400);
-    exit('Invalid JSON payload');
+// ----------------------------------------------------------------------------
+// 4. Log Webhook Payload (With Event Metadata)
+// ----------------------------------------------------------------------------
+try {
+    $logStmt = $db->prepare("INSERT INTO webhook_log (hievents_event_id, payload, event_type, ip_address, created_at) VALUES (?, ?, ?, ?, NOW())");
+    $logStmt->execute([$hieventsEventId ? (string)$hieventsEventId : null, $rawPayload, $eventType ?: null, $clientIp]);
+} catch (\Throwable $e) {
+    try {
+        $logStmt = $db->prepare("INSERT INTO webhook_log (hievents_event_id, payload, event_type, created_at) VALUES (?, ?, ?, NOW())");
+        $logStmt->execute([$hieventsEventId ? (string)$hieventsEventId : null, $rawPayload, $eventType ?: null]);
+    } catch (\Throwable $e2) {
+        try {
+            $logStmt = $db->prepare("INSERT INTO webhook_log (payload, created_at) VALUES (?, NOW())");
+            $logStmt->execute([$rawPayload]);
+        } catch (\Throwable $e3) {}
+    }
 }
 
-// Define relevant event types (including both US & UK spellings)
+if (empty($eventType) || empty($hieventsEventId)) {
+    http_response_code(200);
+    exit(json_encode(['status' => 'ignored', 'reason' => 'Missing event_type or event_id']));
+}
+
+$evStmt = $db->prepare("SELECT * FROM cow_bingo_events WHERE hievents_event_id = ? LIMIT 1");
+$evStmt->execute([(string)$hieventsEventId]);
+$event = $evStmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$event) {
+    http_response_code(200);
+    exit(json_encode(['status' => 'ignored', 'reason' => 'No matching Cow Bingo event linked to Hi.Events ID ' . $hieventsEventId]));
+}
+
+$eventDbId = (int)$event['id'];
+$gridCols = (int)($event['grid_cols'] ?? 16);
+$gridRows = (int)($event['grid_rows'] ?? 16);
+$pricingTiers = !empty($event['pricing_tiers']) ? (json_decode($event['pricing_tiers'], true) ?: []) : [];
+
+// ----------------------------------------------------------------------------
+// 5. Event Categorization Arrays
+// ----------------------------------------------------------------------------
 $creationEvents = [
-    'order.completed', 'order.created', 'attendee.created', 'ticket.created',
-    'ORDER_COMPLETED', 'ORDER_CREATED', 'ATTENDEE_CREATED', 'TICKET_CREATED'
+    'order.created', 'order.completed', 'attendee.created',
+    'order_created', 'order_completed', 'attendee_created'
 ];
+
 $paymentEvents = [
-    'order.marked_as_paid', 'order.paid', 'ORDER_MARKED_AS_PAID', 'ORDER_PAID'
+    'order.marked_as_paid', 'order.paid', 'order.completed',
+    'order_marked_as_paid', 'order_paid', 'order_completed'
 ];
+
 $cancellationEvents = [
-    'order.cancelled', 'order.canceled', 'order.refunded', 'order.voided', 'order.deleted',
-    'attendee.cancelled', 'attendee.canceled', 'attendee.deleted', 'attendee.voided', 'attendee.removed',
-    'ticket.cancelled', 'ticket.canceled', 'ticket.deleted', 'ticket.voided',
-    'ORDER_CANCELLED', 'ORDER_CANCELED', 'ORDER_REFUNDED', 'ORDER_VOIDED', 'ORDER_DELETED',
-    'ATTENDEE_CANCELLED', 'ATTENDEE_CANCELED', 'ATTENDEE_DELETED', 'ATTENDEE_VOIDED', 'ATTENDEE_REMOVED',
-    'TICKET_CANCELLED', 'TICKET_CANCELED', 'TICKET_DELETED', 'TICKET_VOIDED'
+    'order.cancelled', 'order.canceled', 'order.deleted', 'order.refunded', 'order.voided',
+    'order_cancelled', 'order_canceled', 'order_deleted', 'order_refunded', 'order_voided'
 ];
 
-$isCreation = in_array($eventType, $creationEvents, true);
-$isPayment = in_array($eventType, $paymentEvents, true);
-$isCancellation = in_array($eventType, $cancellationEvents, true);
+$ticketCancellationEvents = [
+    'attendee.cancelled', 'attendee.canceled', 'attendee.removed', 'attendee.deleted',
+    'ticket.cancelled', 'ticket.canceled', 'ticket.deleted', 'ticket.voided',
+    'attendee_cancelled', 'attendee_canceled', 'attendee_removed', 'attendee_deleted',
+    'ticket_cancelled', 'ticket_canceled', 'ticket_deleted', 'ticket_voided'
+];
 
-if (!$isCreation && !$isCancellation && !$isPayment) {
-    http_response_code(200);
-    exit('Event type not relevant: ' . $eventType);
-}
+$isCreation     = in_array($eventType, $creationEvents, true);
+$isPayment      = in_array($eventType, $paymentEvents, true);
+$isCancellation = in_array($eventType, $cancellationEvents, true) || in_array($eventType, $ticketCancellationEvents, true);
 
-// Check if this event ID has a cow bingo game registered
-if (!$hieventsEventId) {
-    $db->prepare("UPDATE webhook_log SET error_message = 'No event_id found in payload' WHERE id = ?")
-       ->execute([$logId]);
-    http_response_code(200);
-    exit('No event_id in payload');
-}
-
-// Look up the cow bingo event
-$eventStmt = $db->prepare(
-    "SELECT id, grid_cols, grid_rows, pricing_tiers, is_active FROM cow_bingo_events WHERE hievents_event_id = ?"
-);
-$eventStmt->execute([$hieventsEventId]);
-$bingoEvent = $eventStmt->fetch(PDO::FETCH_ASSOC);
-
-if (!$bingoEvent) {
-    $db->prepare("UPDATE webhook_log SET error_message = 'No cow bingo game for this event' WHERE id = ?")
-       ->execute([$logId]);
-    http_response_code(200);
-    exit('No cow bingo game for event: ' . $hieventsEventId);
-}
-
-// Allow cancellations and payments on inactive games
-if (!$isCancellation && !$isPayment && !$bingoEvent['is_active']) {
-    $db->prepare("UPDATE webhook_log SET processed = 1, error_message = 'Game is not active' WHERE id = ?")
-       ->execute([$logId]);
-    http_response_code(200);
-    exit('Game is not active');
-}
-
-$bingoEventId = (int) $bingoEvent['id'];
-$gridCols = (int) $bingoEvent['grid_cols'];
-$gridRows = (int) $bingoEvent['grid_rows'];
-
-$cancelledStatuses = ['CANCELLED', 'CANCELED', 'REFUNDED', 'VOIDED', 'DELETED'];
-$unpaidStatuses = ['AWAITING_PAYMENT', 'PENDING', 'UNPAID', 'RESERVED'];
-$isPartialOrderCancel = false;
-
-// Load pricing tiers
-$pricingTiers = [];
-if (!empty($bingoEvent['pricing_tiers'])) {
-    $pricingTiers = json_decode($bingoEvent['pricing_tiers'], true) ?: [];
-}
-
-// --- 1. HANDLE PAYMENT STATUS UPDATES (order.marked_as_paid) ---
-if ($isPayment) {
-    $orderCandidates = array_values(array_unique(array_filter([
-        $data['short_id'] ?? null,
-        isset($data['id']) ? (string)$data['id'] : null,
-        $data['order_id'] ?? null,
-        $data['order']['short_id'] ?? null,
-        isset($data['order']['id']) ? (string)$data['order']['id'] : null,
-    ], fn($v) => $v !== null && $v !== '')));
-
-    if (!empty($orderCandidates)) {
-        $inPlaceholders = implode(',', array_fill(0, count($orderCandidates), '?'));
-        $cellsStmt = $db->prepare("SELECT id, order_amount FROM cow_bingo_cells WHERE event_id = ? AND order_id IN ($inPlaceholders)");
-        $cellsStmt->execute(array_merge([$bingoEventId], $orderCandidates));
-        $foundCells = $cellsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-        if (!empty($foundCells)) {
-            $count = count($foundCells);
-            $recordedAmount = (float)($foundCells[0]['order_amount'] ?? 0);
-            if ($recordedAmount <= 0) {
-                $payloadAmount = $data['total_gross'] ?? $data['order']['total_gross'] ?? null;
-                $recordedAmount = is_numeric($payloadAmount) ? (float)$payloadAmount : calculateBatchPrice($count, $pricingTiers);
-            }
-            $perSquare = round($recordedAmount / max(1, $count), 2);
-
-            $updStmt = $db->prepare("
-                UPDATE cow_bingo_cells 
-                SET is_paid = 1, 
-                    order_amount = COALESCE(order_amount, ?), 
-                    price_paid = ? 
-                WHERE event_id = ? AND order_id IN ($inPlaceholders)
-            ");
-            $updStmt->execute(array_merge([$recordedAmount, $perSquare, $bingoEventId], $orderCandidates));
-        }
-    }
-
-    $db->prepare("UPDATE webhook_log SET processed = 1 WHERE id = ?")->execute([$logId]);
-    http_response_code(200);
-    exit('Marked as paid');
-}
-
-// --- 2. HANDLE ORDER-LEVEL CANCELLATIONS ---
-if ($isCancellation && stripos($eventType, 'order') !== false) {
-    $orderAttendees = $data['attendees'] ?? $data['order']['attendees'] ?? null;
-    $isPartial = false;
-
-    if (!empty($orderAttendees) && is_array($orderAttendees)) {
-        $hasActive = false;
-        $hasCancelled = false;
-        foreach ($orderAttendees as $att) {
-            $status = strtoupper(trim($att['status'] ?? ''));
-            if (in_array($status, $cancelledStatuses, true)) {
-                $hasCancelled = true;
-            } else {
-                $hasActive = true;
-            }
-        }
-        $isPartial = ($hasActive && $hasCancelled);
-    }
-
-    if ($isPartial) {
-        $isPartialOrderCancel = true;
-    } else {
-        $orderCandidates = array_values(array_unique(array_filter([
-            $data['short_id'] ?? null,
-            isset($data['id']) ? (string)$data['id'] : null,
-            $data['order_id'] ?? null,
-            $data['order']['short_id'] ?? null,
-            isset($data['order']['id']) ? (string)$data['order']['id'] : null,
-        ], fn($v) => $v !== null && $v !== '')));
-
-        if (empty($orderCandidates)) {
-            $db->prepare("UPDATE webhook_log SET processed = 1, error_message = 'Order cancellation missing order ID' WHERE id = ?")
-               ->execute([$logId]);
-            http_response_code(200);
-            exit('No order ID');
-        }
-
-        $inPlaceholders = implode(',', array_fill(0, count($orderCandidates), '?'));
-        $delStmt = $db->prepare("DELETE FROM cow_bingo_cells WHERE event_id = ? AND order_id IN ($inPlaceholders)");
-        $delStmt->execute(array_merge([$bingoEventId], $orderCandidates));
-        
-        $db->prepare("UPDATE webhook_log SET processed = 1 WHERE id = ?")->execute([$logId]);
+// ----------------------------------------------------------------------------
+// 6. Inactive Game Guard: block new cells, allow payments/cancellations
+// ----------------------------------------------------------------------------
+if (empty($event['is_active']) && $isCreation) {
+    // Pure creation events (order.created, attendee.created) -> short-circuit entirely
+    if (!$isPayment) {
         http_response_code(200);
-        exit('Order cells removed');
+        exit(json_encode([
+            'status' => 'ignored',
+            'reason' => "Event ID {$eventDbId} is deactivated. New square allocations are blocked."
+        ]));
     }
+    // Dual-purpose events (order.completed) -> process payment in Branch (B), skip allocation in Branch (C)
+    $isCreation = false;
 }
 
-// --- 2.5 PROMOTE UNPAID CELLS ON ORDER COMPLETION ---
-if ($isCreation && stripos($eventType, 'order') !== false
-    && in_array($eventType, ['order.completed', 'ORDER_COMPLETED', 'order.paid', 'ORDER_PAID'], true)
-) {
-    $completedOrderIds = array_values(array_unique(array_filter([
-        $data['short_id'] ?? null,
-        isset($data['id']) ? (string)$data['id'] : null,
-        $data['order_id'] ?? null,
-        $data['order']['short_id'] ?? null,
-        isset($data['order']['id']) ? (string)$data['order']['id'] : null,
-    ], fn($v) => $v !== null && $v !== '')));
+// ----------------------------------------------------------------------------
+// 7. Action Execution
+// ----------------------------------------------------------------------------
 
-    if (!empty($completedOrderIds)) {
-        $ph = implode(',', array_fill(0, count($completedOrderIds), '?'));
-        $cellsStmt = $db->prepare("SELECT id, order_amount FROM cow_bingo_cells WHERE event_id = ? AND order_id IN ($ph)");
-        $cellsStmt->execute(array_merge([$bingoEventId], $completedOrderIds));
-        $foundCells = $cellsStmt->fetchAll(PDO::FETCH_ASSOC);
+// (A) Cancellation / Refund Handling
+if (in_array($eventType, $cancellationEvents, true)) {
+    $orderId = trim(
+        $data['short_id']
+        ?? $data['order_id']
+        ?? $data['id']
+        ?? $data['order']['short_id']
+        ?? $data['order']['id']
+        ?? $payload['order_id']
+        ?? ''
+    );
+    $released = 0;
+    if (!empty($orderId)) {
+        $delStmt = $db->prepare("DELETE FROM cow_bingo_cells WHERE event_id = ? AND order_id = ?");
+        $delStmt->execute([$eventDbId, $orderId]);
+        $released = $delStmt->rowCount();
+        if ($released > 0) {
+            logAuditEvent($db, $eventDbId, 'webhook_order_cancelled', null, null, $orderId, null, 0.00, "Released $released square(s) for cancelled order #$orderId", 'Hi.Events Webhook');
+        }
+    }
+    http_response_code(200);
+    exit(json_encode(['status' => 'success', 'event' => $eventType, 'released' => $released]));
+}
 
-        if (!empty($foundCells)) {
-            $count = count($foundCells);
-            $recordedAmount = (float)($foundCells[0]['order_amount'] ?? 0);
-            if ($recordedAmount <= 0) {
-                $payloadAmount = $data['total_gross'] ?? $data['order']['total_gross'] ?? null;
-                $recordedAmount = is_numeric($payloadAmount) ? (float)$payloadAmount : calculateBatchPrice($count, $pricingTiers);
+if (in_array($eventType, $ticketCancellationEvents, true)) {
+    $ticketId = trim(
+        $data['short_id']
+        ?? $data['ticket_id']
+        ?? $data['public_id']
+        ?? $data['id']
+        ?? $data['attendee']['short_id']
+        ?? $data['attendee']['public_id']
+        ?? $data['attendee']['id']
+        ?? ''
+    );
+    $released = 0;
+    if (!empty($ticketId)) {
+        $delStmt = $db->prepare("DELETE FROM cow_bingo_cells WHERE event_id = ? AND ticket_id = ?");
+        $delStmt->execute([$eventDbId, $ticketId]);
+        $released = $delStmt->rowCount();
+        if ($released > 0) {
+            logAuditEvent($db, $eventDbId, 'webhook_ticket_cancelled', null, $ticketId, null, null, 0.00, "Released square for cancelled ticket #$ticketId", 'Hi.Events Webhook');
+        }
+    }
+    http_response_code(200);
+    exit(json_encode(['status' => 'success', 'event' => $eventType, 'released' => $released]));
+}
+
+// (B) Payment Status Updates
+if ($isPayment && !in_array($eventType, ['order.created', 'order_created'], true)) {
+    $orderArray = is_array($data['order'] ?? null) ? $data['order'] : [];
+    $orderId = trim(
+        $orderArray['short_id']
+        ?? $orderArray['public_id']
+        ?? $orderArray['id']
+        ?? $data['order_id']
+        ?? $data['short_id']
+        ?? $data['id']
+        ?? ''
+    );
+    $gross = isset($orderArray['total_gross']) ? (float)$orderArray['total_gross'] : (isset($data['total_gross']) ? (float)$data['total_gross'] : null);
+
+    if (!empty($orderId)) {
+        $countStmt = $db->prepare("SELECT COUNT(*) FROM cow_bingo_cells WHERE event_id = ? AND order_id = ?");
+        $countStmt->execute([$eventDbId, $orderId]);
+        $cellCount = (int)$countStmt->fetchColumn();
+
+        if ($cellCount > 0) {
+            if ($gross !== null && $gross > 0) {
+                $perSquare = round($gross / $cellCount, 2);
+                $upStmt = $db->prepare("UPDATE cow_bingo_cells SET is_paid = 1, order_amount = ?, price_paid = ? WHERE event_id = ? AND order_id = ?");
+                $upStmt->execute([$gross, $perSquare, $eventDbId, $orderId]);
+            } else {
+                $upStmt = $db->prepare("UPDATE cow_bingo_cells SET is_paid = 1 WHERE event_id = ? AND order_id = ?");
+                $upStmt->execute([$eventDbId, $orderId]);
             }
-            $perSquare = round($recordedAmount / max(1, $count), 2);
-
-            $updStmt = $db->prepare("
-                UPDATE cow_bingo_cells 
-                SET is_paid = 1, 
-                    order_amount = COALESCE(order_amount, ?), 
-                    price_paid = ? 
-                WHERE event_id = ? AND order_id IN ($ph)
-            ");
-            $updStmt->execute(array_merge([$recordedAmount, $perSquare, $bingoEventId], $completedOrderIds));
+            logAuditEvent($db, $eventDbId, 'webhook_marked_paid', null, null, $orderId, null, $gross, "Order #$orderId marked paid via webhook", 'Hi.Events Webhook');
         }
     }
 }
 
-// --- 3. ORDER CREATION WITHOUT EMBEDDED ATTENDEES -> ACKNOWLEDGE ONLY ---
-if ($isCreation && stripos($eventType, 'order') !== false
-    && empty($data['attendees'])
-    && empty($data['order']['attendees'])
-) {
-    $db->prepare("UPDATE webhook_log SET processed = 1, error_message = 'Order acknowledged (tickets handled via attendee.created)' WHERE id = ?")
-       ->execute([$logId]);
-    http_response_code(200);
-    exit('OK');
-}
-
-// --- 4. EXTRACT ATTENDEES FOR CREATION OR PER-TICKET CANCELLATION ---
-$attendees = [];
-if (!empty($data['attendees']) && is_array($data['attendees'])) {
-    $attendees = $data['attendees'];
-} elseif (!empty($data['order']['attendees']) && is_array($data['order']['attendees'])) {
-    $attendees = $data['order']['attendees'];
-} else {
-    $attendees = [$data];
-}
-
-$defaultOrderId = (stripos($eventType, 'order') !== false)
-    ? ($data['short_id'] ?? (isset($data['id']) ? (string)$data['id'] : null))
-    : null;
-
-$rawOrderAmount = null;
-if (isset($data['total_gross']) && is_numeric($data['total_gross'])) {
-    $rawOrderAmount = (float)$data['total_gross'];
-} elseif (isset($data['order']['total_gross']) && is_numeric($data['order']['total_gross'])) {
-    $rawOrderAmount = (float)$data['order']['total_gross'];
-} elseif (isset($data['total_amount']) && is_numeric($data['total_amount'])) {
-    $rawOrderAmount = (float)$data['total_amount'];
-} elseif (isset($data['total']) && is_numeric($data['total'])) {
-    $rawOrderAmount = (float)$data['total'];
-}
-
-$attendeeCount = max(1, count($attendees));
-$calculatedOrderTotal = $rawOrderAmount !== null 
-    ? $rawOrderAmount 
-    : calculateBatchPrice($attendeeCount, $pricingTiers);
-$pricePerSquare = round($calculatedOrderTotal / $attendeeCount, 2);
-
-$anyFailed = false;
-
-foreach ($attendees as $attendee) {
-    $status = strtoupper(trim($attendee['status'] ?? $data['status'] ?? ''));
-
-    if ($isCreation && in_array($status, $cancelledStatuses, true)) {
-        continue;
+// (C) Ticket Assignment / Order Creation
+if ($isCreation) {
+    $attendees = [];
+    if (!empty($data['attendees']) && is_array($data['attendees'])) {
+        $attendees = $data['attendees'];
+    } elseif (!empty($data['order']['attendees']) && is_array($data['order']['attendees'])) {
+        $attendees = $data['order']['attendees'];
+    } elseif (!empty($data['attendee']) && is_array($data['attendee'])) {
+        $attendees = [$data['attendee']];
+    } elseif (!empty($data['id']) && (!empty($data['first_name']) || !empty($data['public_id']) || !empty($data['short_id']))) {
+        $attendees = [$data];
     }
 
-    $isPaid = in_array($status, $unpaidStatuses, true) ? 0 : 1;
-
-    $candidates = array_values(array_unique(array_filter([
-        $attendee['short_id'] ?? null,
-        $attendee['public_id'] ?? null,
-        isset($attendee['id']) ? (string)$attendee['id'] : null,
-        $attendee['ticket_id'] ?? null,
-        $attendee['attendee_id'] ?? null,
-    ], fn($val) => $val !== null && $val !== '')));
-
-    if (empty($candidates)) {
-        continue;
+    if (empty($attendees)) {
+        if (function_exists('syncAttendeesFromHiEvents')) {
+            $synced = syncAttendeesFromHiEvents($db, $event);
+            logAuditEvent($db, $eventDbId, 'webhook_attendee_sync', null, null, null, null, null, "Webhook synced $synced square(s) via API fallback", 'Hi.Events Webhook');
+        }
+        http_response_code(200);
+        exit(json_encode(['status' => 'success', 'event' => $eventType, 'method' => 'api_fallback']));
     }
 
-    $ticketId = $candidates[0];
+    $orderArray = is_array($data['order'] ?? null) ? $data['order'] : [];
+    $orderId = (string)(
+        $orderArray['short_id']
+        ?? $orderArray['public_id']
+        ?? $orderArray['id']
+        ?? $data['order_id']
+        ?? $data['short_id']
+        ?? $data['id']
+        ?? ''
+    );
+    $orderGross = isset($orderArray['total_gross']) ? (float)$orderArray['total_gross'] : (isset($data['total_gross']) ? (float)$data['total_gross'] : 0.0);
+    $orderPaid = !empty($orderArray['is_paid']) || in_array($eventType, $paymentEvents, true);
 
-    // --- ACTION: CANCELLATION ---
-    if ($isCancellation) {
-        if ($isPartialOrderCancel && !in_array($status, $cancelledStatuses, true)) {
+    $qty = count($attendees);
+    $batchTotal = ($orderGross > 0) ? $orderGross : calculateBatchPrice($qty, $pricingTiers);
+    $perSquare = round($batchTotal / max(1, $qty), 2);
+    $paidAmount = $orderPaid ? $perSquare : 0.00;
+
+    $takenStmt = $db->prepare("SELECT cell_reference FROM cow_bingo_cells WHERE event_id = ?");
+    $takenStmt->execute([$eventDbId]);
+    $takenSet = array_flip($takenStmt->fetchAll(PDO::FETCH_COLUMN));
+
+    $availableCells = [];
+    for ($r = 1; $r <= $gridRows; $r++) {
+        for ($c = 1; $c <= $gridCols; $c++) {
+            $colLetters = '';
+            $tempC = $c;
+            while ($tempC > 0) {
+                $rem = ($tempC - 1) % 26;
+                $colLetters = chr(65 + $rem) . $colLetters;
+                $tempC = (int)(($tempC - $rem - 1) / 26);
+            }
+            $ref = $colLetters . $r;
+            if (!isset($takenSet[$ref])) {
+                $availableCells[] = $ref;
+            }
+        }
+    }
+    shuffle($availableCells);
+
+    $assignedRefs = [];
+    $insertStmt = $db->prepare("
+        INSERT INTO cow_bingo_cells 
+        (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, order_amount, price_paid, payment_method, assigned_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'online', 'Hi.Events Webhook')
+    ");
+
+    foreach ($attendees as $att) {
+        $ticketId = (string)($att['short_id'] ?? $att['public_id'] ?? $att['id'] ?? '');
+        if (empty($ticketId)) {
             continue;
         }
 
-        $inPlaceholders = implode(',', array_fill(0, count($candidates), '?'));
-        $stmt = $db->prepare("DELETE FROM cow_bingo_cells WHERE event_id = ? AND ticket_id IN ($inPlaceholders)");
-        $stmt->execute(array_merge([$bingoEventId], $candidates));
-        continue;
-    }
-
-    // --- ACTION: CREATION ---
-    $inPlaceholders = implode(',', array_fill(0, count($candidates), '?'));
-    $checkStmt = $db->prepare(
-        "SELECT id, is_paid FROM cow_bingo_cells WHERE event_id = ? AND ticket_id IN ($inPlaceholders)"
-    );
-    $checkStmt->execute(array_merge([$bingoEventId], $candidates));
-    $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($existing) {
-        if ((int)$existing['is_paid'] !== $isPaid) {
-            $paidUpdateAmount = $isPaid ? $pricePerSquare : 0.00;
-            $db->prepare("UPDATE cow_bingo_cells SET is_paid = ?, price_paid = ? WHERE id = ?")
-               ->execute([$isPaid, $paidUpdateAmount, $existing['id']]);
-        }
-        continue;
-    }
-
-    $orderArray = is_array($attendee['order'] ?? null) ? $attendee['order'] : [];
-    $rawOrderId = $orderArray['short_id'] 
-        ?? ($attendee['order_id'] ?? null)
-        ?? ($orderArray['id'] ?? null)
-        ?? $defaultOrderId;
-    $orderId = ($rawOrderId !== null && $rawOrderId !== '') ? (string)$rawOrderId : null;
-
-    $firstName = $attendee['first_name'] ?? $attendee['firstName'] ?? '';
-    $lastName = $attendee['last_name'] ?? $attendee['lastName'] ?? '';
-    $buyerName = trim($firstName . ' ' . $lastName);
-    if (empty($buyerName)) {
-        $buyerName = $attendee['name'] ?? $attendee['email'] ?? 'Unknown';
-    }
-
-    $buyerEmail = $attendee['email'] ?? $attendee['buyer_email'] ?? $data['email'] ?? null;
-    $cellPricePaid = $isPaid ? $pricePerSquare : 0.00;
-
-    $assigned = false;
-    $maxRetries = 5;
-
-    for ($i = 0; $i < $maxRetries; $i++) {
-        $assignedCell = assignRandomCell($db, $bingoEventId, $gridCols, $gridRows);
-
-        if (!$assignedCell) {
-            $db->prepare("UPDATE webhook_log SET error_message = 'SOLD OUT' WHERE id = ?")
-               ->execute([$logId]);
-            http_response_code(200);
-            exit('Sold out');
+        $checkStmt = $db->prepare("SELECT id FROM cow_bingo_cells WHERE event_id = ? AND ticket_id = ? LIMIT 1");
+        $checkStmt->execute([$eventDbId, $ticketId]);
+        if ($checkStmt->fetch()) {
+            continue;
         }
 
-        try {
-            $insertStmt = $db->prepare(
-                "INSERT INTO cow_bingo_cells 
-                 (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, order_amount, price_paid, payment_method, assigned_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'online', 'hi.events')"
-            );
-            $insertStmt->execute([
-                $bingoEventId, 
-                $ticketId, 
-                $orderId, 
-                $buyerName, 
-                $buyerEmail, 
-                $assignedCell, 
-                $isPaid,
-                $calculatedOrderTotal,
-                $cellPricePaid
-            ]);
-            $assigned = true;
-            break;
-        } catch (PDOException $e) {
-            $isDuplicate = ($e->errorInfo[1] ?? null) === 1062
-                || strpos($e->getMessage(), '1062') !== false
-                || strpos($e->getMessage(), 'Duplicate entry') !== false;
+        $firstName = trim($att['first_name'] ?? '');
+        $lastName = trim($att['last_name'] ?? '');
+        $buyerName = trim("$firstName $lastName");
+        if (empty($buyerName) && !empty($orderArray)) {
+            $buyerName = trim(($orderArray['first_name'] ?? '') . ' ' . ($orderArray['last_name'] ?? ''));
+        }
+        if (empty($buyerName)) {
+            $buyerName = 'Hi.Events Buyer';
+        }
 
-            if (!$isDuplicate) {
-                throw $e;
-            }
+        $buyerEmail = trim($att['email'] ?? $orderArray['email'] ?? $data['email'] ?? '');
 
-            if (strpos($e->getMessage(), 'unique_ticket_per_event') !== false) {
-                $assigned = true;
+        $assigned = false;
+        for ($attempt = 0; $attempt < 5; $attempt++) {
+            if (empty($availableCells)) {
                 break;
             }
+            $cellRef = array_pop($availableCells);
 
-            continue;
+            try {
+                $insertStmt->execute([
+                    $eventDbId,
+                    $ticketId,
+                    $orderId ?: null,
+                    $buyerName,
+                    $buyerEmail ?: null,
+                    $cellRef,
+                    $orderPaid ? 1 : 0,
+                    $batchTotal,
+                    $paidAmount
+                ]);
+                $assignedRefs[] = $cellRef;
+                $takenSet[$cellRef] = true;
+                $assigned = true;
+                break;
+            } catch (PDOException $e) {
+                if (($e->errorInfo[1] ?? null) === 1062 || strpos($e->getMessage(), '1062') !== false) {
+                    continue;
+                }
+                break;
+            }
         }
     }
 
-    if (!$assigned) {
-        $anyFailed = true;
-        $db->prepare("UPDATE webhook_log SET error_message = 'Failed to assign cell after retries' WHERE id = ?")
-           ->execute([$logId]);
+    if (!empty($assignedRefs)) {
+        $assignedList = implode(', ', $assignedRefs);
+        logAuditEvent($db, $eventDbId, 'webhook_cell_assigned', $assignedList, null, $orderId, null, $batchTotal, "Webhook assigned " . count($assignedRefs) . " square(s): $assignedList", 'Hi.Events Webhook');
     }
-}
-
-$db->prepare("UPDATE webhook_log SET processed = ? WHERE id = ?")
-   ->execute([$anyFailed ? 0 : 1, $logId]);
-
-if ($anyFailed) {
-    http_response_code(500);
-    exit('Partial failure - retry requested');
 }
 
 http_response_code(200);
-echo 'OK';
+echo json_encode(['status' => 'success', 'event' => $eventType]);

@@ -7,7 +7,76 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 /**
- * Backfill historical cells that lack financial records (called during admin reconciliation)
+ * Convert Alpha cell reference (e.g. 'D2', 'G4') to Numeric (e.g. 16, 43)
+ * Row-major order: (row - 1) * cols + col
+ */
+function cellAlphaToNum(string $alphaRef, int $cols): int {
+    $alphaRef = strtoupper(trim($alphaRef));
+    if (!preg_match('/^([A-Z])([0-9]+)$/', $alphaRef, $m)) {
+        return is_numeric($alphaRef) ? (int)$alphaRef : 0;
+    }
+    $col = ord($m[1]) - 64;
+    $row = (int)$m[2];
+    return (($row - 1) * $cols) + $col;
+}
+
+/**
+ * Convert Numeric cell index (e.g. 16, 43) to Alpha reference (e.g. 'D2', 'G4')
+ */
+function cellNumToAlpha(int $num, int $cols): string {
+    if ($num <= 0 || $cols <= 0) return '';
+    $row = (int) floor(($num - 1) / $cols) + 1;
+    $col = (($num - 1) % $cols) + 1;
+    $colLetter = chr(64 + $col);
+    return $colLetter . $row;
+}
+
+/**
+ * Format a cell reference according to the event's numbering mode ('alpha' vs 'numeric')
+ */
+function formatCellRef(string $cellRef, int $cols, string $mode = 'alpha'): string {
+    if ($mode === 'numeric') {
+        if (is_numeric($cellRef)) return (string)$cellRef;
+        $num = cellAlphaToNum($cellRef, $cols);
+        return $num > 0 ? (string)$num : $cellRef;
+    }
+    if (is_numeric($cellRef)) {
+        $alpha = cellNumToAlpha((int)$cellRef, $cols);
+        return $alpha ?: $cellRef;
+    }
+    return strtoupper($cellRef);
+}
+
+/**
+ * Normalize any input (either 'D2' or '16') into canonical Alpha reference ('D2')
+ */
+function normalizeCellRef(string $input, int $cols): string {
+    $input = strtoupper(trim($input));
+    if (is_numeric($input)) {
+        $alpha = cellNumToAlpha((int)$input, $cols);
+        return $alpha ?: $input;
+    }
+    return $input;
+}
+
+/**
+ * Helper: Log an audit trail event for treasurers and admins
+ */
+function logAuditEvent(PDO $db, int $eventId, string $action, ?string $cellRef = null, ?string $ticketId = null, ?string $orderId = null, ?string $buyerName = null, ?float $amount = null, ?string $details = null, string $performedBy = 'System'): void {
+    try {
+        $stmt = $db->prepare("
+            INSERT INTO cow_bingo_audit_log 
+            (event_id, action, cell_reference, ticket_id, order_id, buyer_name, amount, details, performed_by) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ");
+        $stmt->execute([$eventId, $action, $cellRef, $ticketId, $orderId, $buyerName, $amount, $details, $performedBy]);
+    } catch (Exception $e) {
+        error_log('Failed to write audit log: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Backfill historical cells that lack financial records
  */
 function backfillMissingCellPrices(PDO $db, int $eventId, array $pricingTiers): void {
     try {
@@ -38,7 +107,7 @@ function backfillMissingCellPrices(PDO $db, int $eventId, array $pricingTiers): 
             $upd->execute([$batchTotal, $paidPerSquare, $method, $eventId, $b['batch_ref']]);
         }
     } catch (Exception $e) {
-        error_log('Cow Bingo backfill failed: ' . $e->getMessage());
+        error_log('Cow Pat Bingo backfill failed: ' . $e->getMessage());
     }
 }
 
@@ -93,7 +162,7 @@ function assignRandomCell(PDO $db, int $eventId, int $cols, int $rows): ?string 
 }
 
 /**
- * Loads all bookings for an event keyed by cell reference (Safe SELECT *; no public DDL)
+ * Loads all bookings for an event keyed by cell reference
  */
 function getEventBookings(PDO $db, int $eventId): array {
     $stmt = $db->prepare("SELECT * FROM cow_bingo_cells WHERE event_id = ?");
@@ -126,7 +195,7 @@ function calculateBatchPrice(int $qty, array $pricingTiers): float {
 }
 
 /**
- * Comprehensive Cash & Sales Reconciliation for Treasurers (Offline-Resilient)
+ * Comprehensive Cash & Sales Reconciliation for Treasurers
  */
 function calculateEventCashReconciliation(PDO $db, int $eventId, array $pricingTiers): array {
     $stmt = $db->prepare("
@@ -173,12 +242,10 @@ function calculateEventCashReconciliation(PDO $db, int $eventId, array $pricingT
         $qty = (int)$b['cell_count'];
         $isPaid = (int)$b['is_paid'] === 1;
 
-        // 1. Expected calculation based on active multi-ticket tiers
         $expectedAmount = calculateBatchPrice($qty, $pricingTiers);
         $fullPriceNoDiscount = $qty * $baseSinglePrice;
         $discountApplied = max(0.0, $fullPriceNoDiscount - $expectedAmount);
 
-        // 2. Actual payment resolution
         if ($isPaid) {
             if ($b['recorded_order_amount'] !== null && (float)$b['recorded_order_amount'] > 0) {
                 $actualPaid = (float)$b['recorded_order_amount'];
@@ -191,7 +258,6 @@ function calculateEventCashReconciliation(PDO $db, int $eventId, array $pricingT
             $actualPaid = 0.00;
         }
 
-        // 3. Populate Buyer Batch breakdown
         $buyerBatches[] = [
             'batch_ref' => $b['batch_ref'],
             'buyer_name' => $b['buyer_name'],
@@ -207,7 +273,6 @@ function calculateEventCashReconciliation(PDO $db, int $eventId, array $pricingT
             'is_online' => $isOnline
         ];
 
-        // 4. Populate Seller / Channel summary
         $sellerKey = $seller . '|' . ($isOnline ? 'online' : 'cash');
         if (!isset($summary[$sellerKey])) {
             $summary[$sellerKey] = [
@@ -231,7 +296,6 @@ function calculateEventCashReconciliation(PDO $db, int $eventId, array $pricingT
             $summary[$sellerKey]['unpaid_amount'] += $expectedAmount;
         }
 
-        // 5. Aggregate overall totals
         $totals['total_expected'] += $expectedAmount;
         $totals['total_paid'] += $actualPaid;
         $totals['total_discount'] += $discountApplied;
@@ -260,15 +324,31 @@ function calculateEventCashReconciliation(PDO $db, int $eventId, array $pricingT
 }
 
 /**
- * Exports Detailed Bookings to CSV with Financial & Discount Breakdown for Treasurers
+ * Exports Detailed Bookings to CSV (Formatted for chosen numbering mode)
  */
 function exportEventBookingsCsv(PDO $db, int $eventId, string $eventName, array $pricingTiers = []): void {
+    $evStmt = $db->prepare("SELECT grid_cols, cell_naming, pricing_tiers FROM cow_bingo_events WHERE id = ?");
+    $evStmt->execute([$eventId]);
+    $eventRow = $evStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $cols = (int)($eventRow['grid_cols'] ?? 16);
+    $cellNaming = $eventRow['cell_naming'] ?? 'alpha';
+
+    if (empty($pricingTiers)) {
+        if (!empty($eventRow['pricing_tiers'])) {
+            $pricingTiers = json_decode($eventRow['pricing_tiers'], true) ?: [];
+        }
+        if (empty($pricingTiers)) {
+            $pricingTiers = defined('DEFAULT_PRICING_TIERS') ? DEFAULT_PRICING_TIERS : [1 => 10.00, 3 => 25.00, 5 => 40.00, 10 => 70.00];
+        }
+    }
+
     $stmt = $db->prepare("
         SELECT cell_reference, ticket_id, order_id, buyer_name, buyer_email, is_paid, 
                order_amount, price_paid, payment_method, assigned_by, prize, created_at 
         FROM cow_bingo_cells 
         WHERE event_id = ? 
-        ORDER BY cell_reference ASC
+        ORDER BY COALESCE(order_id, ticket_id) ASC, cell_reference ASC
     ");
     $stmt->execute([$eventId]);
     $cells = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -291,13 +371,13 @@ function exportEventBookingsCsv(PDO $db, int $eventId, string $eventName, array 
     fwrite($out, "\xEF\xBB\xBF");
 
     fputcsv($out, [
-        'Cell',
+        $cellNaming === 'numeric' ? 'Square #' : 'Cell',
         'Ticket ID',
         'Order / Batch Ref',
         'Buyer Name',
         'Buyer Contact',
         'Payment Method',
-        'Square Price ($)',
+        'Price per Ticket ($)',
         'Expected Batch Total ($)',
         'Multi-Ticket Discount ($)',
         'Actual Paid ($)',
@@ -307,34 +387,46 @@ function exportEventBookingsCsv(PDO $db, int $eventId, string $eventName, array 
         'Assigned At'
     ]);
 
+    $seenBatchesInCsv = [];
+
     foreach ($cells as $r) {
         $bRef = $r['order_id'] ?: $r['ticket_id'];
         $batchQty = $batchCounts[$bRef] ?? 1;
         $isPaid = (int)$r['is_paid'] === 1;
+        $isFirstInBatch = !isset($seenBatchesInCsv[$bRef]);
+        $seenBatchesInCsv[$bRef] = true;
 
         $expectedBatch = calculateBatchPrice($batchQty, $pricingTiers);
         $fullPriceNoDiscount = $batchQty * $baseSinglePrice;
         $discountAmount = max(0.0, $fullPriceNoDiscount - $expectedBatch);
 
-        $cellPrice = ($r['price_paid'] !== null && (float)$r['price_paid'] > 0)
-            ? (float)$r['price_paid'] 
-            : round($expectedBatch / max(1, $batchQty), 2);
-
-        $actualPaidAmount = $isPaid 
+        $actualBatchPaid = $isPaid 
             ? (($r['order_amount'] !== null && (float)$r['order_amount'] > 0) ? (float)$r['order_amount'] : $expectedBatch) 
             : 0.00;
 
+        if ($r['price_paid'] !== null && (float)$r['price_paid'] > 0) {
+            $ticketPrice = (float)$r['price_paid'];
+        } else {
+            $ticketPrice = round(($isPaid ? $actualBatchPaid : $expectedBatch) / max(1, $batchQty), 2);
+        }
+
+        $expectedCol = $isFirstInBatch ? number_format($expectedBatch, 2, '.', '') : '';
+        $discountCol = ($isFirstInBatch && $discountAmount > 0) ? number_format($discountAmount, 2, '.', '') : ($isFirstInBatch ? '0.00' : '');
+        $actualPaidCol = $isFirstInBatch ? number_format($actualBatchPaid, 2, '.', '') : '';
+
+        $cellDisplay = formatCellRef($r['cell_reference'], $cols, $cellNaming);
+
         fputcsv($out, [
-            $r['cell_reference'],
+            $cellDisplay,
             $r['ticket_id'],
             $bRef,
             $r['buyer_name'],
             $r['buyer_email'] ?? '',
             ucfirst($r['payment_method'] ?? ($r['assigned_by'] === 'hi.events' ? 'Online' : 'Cash')),
-            number_format($cellPrice, 2, '.', ''),
-            number_format($expectedBatch, 2, '.', ''),
-            number_format($discountAmount, 2, '.', ''),
-            number_format($actualPaidAmount, 2, '.', ''),
+            number_format($ticketPrice, 2, '.', ''),
+            $expectedCol,
+            $discountCol,
+            $actualPaidCol,
             $isPaid ? 'Paid' : 'Unpaid',
             $r['assigned_by'] ?? 'hi.events',
             $r['prize'] ?? '',

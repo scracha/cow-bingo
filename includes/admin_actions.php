@@ -6,7 +6,6 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
         return '';
     }
 
-    // Verify CSRF Token
     if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
         return '❌ Security token expired or invalid request. Please refresh and try again.';
     }
@@ -15,15 +14,17 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
 
     switch ($_POST['action']) {
         case 'create_event':
-            if (!$isSuperAdmin) {
-                return '❌ Access denied: Only Super Admins can create new events.';
+            if (($_SESSION['admin_role'] ?? '') === 'seller') {
+                return '❌ Access denied.';
             }
 
-            $hieventsId = trim($_POST['hievents_event_id'] ?? '') ?: trim($_POST['hievents_event_id_manual'] ?? '');
+            $hieventsId = trim($_POST['hievents_event_id'] ?? '');
             $name = trim($_POST['event_name'] ?? '');
+            $description = trim($_POST['event_description'] ?? '');
             $cols = (int) ($_POST['grid_cols'] ?? 16);
             $rows = (int) ($_POST['grid_rows'] ?? 16);
             $allowCellSelection = isset($_POST['allow_cell_selection']) ? 1 : 0;
+            $cellNaming = ($_POST['cell_naming'] ?? 'alpha') === 'numeric' ? 'numeric' : 'alpha';
 
             if (empty($name)) {
                 return '❌ Event Name is required.';
@@ -32,19 +33,33 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $hieventsId = $hieventsId ?: null;
             $slug = null;
             $startDate = null;
-            $venue = null;
+            $venue = trim($_POST['event_venue'] ?? '') ?: null;
+
+            $manualStart = trim($_POST['event_start'] ?? '');
+            if (!empty($manualStart)) {
+                try {
+                    $dt = new DateTime($manualStart);
+                    $startDate = $dt->format('Y-m-d H:i:s');
+                } catch (Exception $e) {}
+            }
 
             if ($hieventsId && (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED)) {
                 $details = function_exists('fetchEventDetails') ? fetchEventDetails($hieventsId) : [];
                 $slug = $details['slug'] ?? (function_exists('fetchEventSlug') ? fetchEventSlug($hieventsId) : null);
-                if (!empty($details['start_date'])) {
+                
+                if (empty($startDate) && !empty($details['start_date'])) {
                     try {
                         $dt = new DateTime($details['start_date']);
                         $dt->setTimezone(new DateTimeZone(date_default_timezone_get()));
                         $startDate = $dt->format('Y-m-d H:i:s');
                     } catch (Exception $e) {}
                 }
-                $venue = $details['settings']['location_details']['venue_name'] ?? null;
+                if (empty($venue)) {
+                    $venue = $details['settings']['location_details']['venue_name'] ?? null;
+                }
+                if (empty($description) && !empty($details['description'])) {
+                    $description = strip_tags($details['description']);
+                }
             }
 
             if (empty($slug)) {
@@ -54,10 +69,21 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $rawTiers = trim($_POST['pricing_tiers'] ?? '');
             $parsedTiers = [];
             if (!empty($rawTiers)) {
-                foreach (explode(',', $rawTiers) as $part) {
-                    $pair = explode(':', trim($part));
-                    if (count($pair) === 2 && is_numeric(trim($pair[0])) && is_numeric(trim($pair[1]))) {
-                        $parsedTiers[(int)trim($pair[0])] = (float)trim($pair[1]);
+                if (strpos($rawTiers, '{') === 0) {
+                    $decoded = json_decode($rawTiers, true);
+                    if (is_array($decoded)) {
+                        foreach ($decoded as $k => $v) {
+                            if (is_numeric($k) && is_numeric($v)) {
+                                $parsedTiers[(int)$k] = (float)$v;
+                            }
+                        }
+                    }
+                } else {
+                    foreach (explode(',', $rawTiers) as $part) {
+                        $pair = explode(':', trim($part));
+                        if (count($pair) === 2 && is_numeric(trim($pair[0])) && is_numeric(trim($pair[1]))) {
+                            $parsedTiers[(int)trim($pair[0])] = (float)trim($pair[1]);
+                        }
                     }
                 }
             }
@@ -86,22 +112,139 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             try {
                 $stmt = $db->prepare("
                     INSERT INTO cow_bingo_events 
-                    (hievents_event_id, event_name, event_slug, event_start, event_venue, grid_cols, grid_rows, pricing_tiers, allow_cell_selection)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (hievents_event_id, event_name, event_slug, event_start, event_venue, event_description, grid_cols, grid_rows, pricing_tiers, allow_cell_selection, cell_naming)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ");
-                $stmt->execute([$hieventsId, $name, $slug, $startDate, $venue, $cols, $rows, $pricingJson, $allowCellSelection]);
+                $stmt->execute([$hieventsId, $name, $slug, $startDate, $venue, $description ?: null, $cols, $rows, $pricingJson, $allowCellSelection, $cellNaming]);
                 $newEventId = (int)$db->lastInsertId();
-                logAuditEvent($db, $newEventId, 'event_created', null, null, null, null, null, "Created event '{$name}'", $adminName);
+
+                if (!$isSuperAdmin) {
+                    $assignStmt = $db->prepare("INSERT IGNORE INTO cow_bingo_admin_events (admin_id, event_id) VALUES (?, ?)");
+                    $assignStmt->execute([$currentAdminId, $newEventId]);
+                }
+
+                $_SESSION['selected_event_id'] = $newEventId;
+                logAuditEvent($db, $newEventId, 'event_created', null, null, null, null, null, "Created event '{$name}' (Numbering: $cellNaming)", $adminName);
                 $safeName = htmlspecialchars($name);
                 $modeText = $hieventsId ? " (Linked to Hi.Events ID $hieventsId)" : " (Standalone / Offline)";
                 return "✅ Event '<strong>$safeName</strong>' created$modeText.";
             } catch (PDOException $e) {
+                if (strpos($e->getMessage(), 'cell_naming') !== false) {
+                    try {
+                        $db->exec("ALTER TABLE cow_bingo_events ADD COLUMN cell_naming VARCHAR(20) NOT NULL DEFAULT 'alpha' AFTER allow_cell_selection");
+                        $stmt = $db->prepare("
+                            INSERT INTO cow_bingo_events 
+                            (hievents_event_id, event_name, event_slug, event_start, event_venue, event_description, grid_cols, grid_rows, pricing_tiers, allow_cell_selection, cell_naming)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ");
+                        $stmt->execute([$hieventsId, $name, $slug, $startDate, $venue, $description ?: null, $cols, $rows, $pricingJson, $allowCellSelection, $cellNaming]);
+                        $newEventId = (int)$db->lastInsertId();
+                        $_SESSION['selected_event_id'] = $newEventId;
+                        return "✅ Event '<strong>" . htmlspecialchars($name) . "</strong>' created.";
+                    } catch (Exception $ex) {}
+                }
                 return (strpos($e->getMessage(), 'Duplicate entry') !== false)
-                    ? "⚠️ A Cow Bingo game is already configured for Hi.Events Event ID <strong>$hieventsId</strong>."
+                    ? "⚠️ A Cow Pat Bingo game is already configured for Hi.Events Event ID <strong>$hieventsId</strong>."
                     : "❌ Error: " . $e->getMessage();
             }
 
-        case 'toggle_cell_selection':
+        case 'update_event_details':
+            $eventDbId = (int)($_POST['event_db_id'] ?? 0);
+            if (!$eventDbId) return '❌ Event not found.';
+
+            if (!$isSuperAdmin && !canManageEvent($db, $currentAdminId, $eventDbId)) {
+                return '❌ Access denied: You do not have permission to modify this event.';
+            }
+
+            $check = $db->prepare("SELECT id FROM cow_bingo_events WHERE id = ?");
+            $check->execute([$eventDbId]);
+            if (!$check->fetch()) {
+                return '❌ Event not found or already deleted.';
+            }
+
+            $name = trim($_POST['event_name'] ?? '');
+            $venue = trim($_POST['event_venue'] ?? '');
+            $start = trim($_POST['event_start'] ?? '');
+            $description = trim($_POST['event_description'] ?? '');
+            $cellNaming = ($_POST['cell_naming'] ?? 'alpha') === 'numeric' ? 'numeric' : 'alpha';
+            $allowCellSelection = isset($_POST['allow_cell_selection']) ? 1 : 0;
+            $rawTiers = trim($_POST['pricing_tiers'] ?? '');
+
+            if (empty($name)) return '❌ Event Name is required.';
+
+            $startDate = null;
+            if (!empty($start)) {
+                try {
+                    $dt = new DateTime($start);
+                    $startDate = $dt->format('Y-m-d H:i:s');
+                } catch (Exception $e) {
+                    $startDate = null;
+                }
+            }
+
+            $parsedTiers = [];
+            if (!empty($rawTiers)) {
+                if (strpos($rawTiers, '{') === 0) {
+                    $decoded = json_decode($rawTiers, true);
+                    if (is_array($decoded)) {
+                        foreach ($decoded as $k => $v) {
+                            if (is_numeric($k) && is_numeric($v)) {
+                                $parsedTiers[(int)$k] = (float)$v;
+                            }
+                        }
+                    }
+                } else {
+                    foreach (explode(',', $rawTiers) as $part) {
+                        $pair = explode(':', trim($part));
+                        if (count($pair) === 2 && is_numeric(trim($pair[0])) && is_numeric(trim($pair[1]))) {
+                            $parsedTiers[(int)trim($pair[0])] = (float)trim($pair[1]);
+                        }
+                    }
+                }
+            }
+            $pricingJson = !empty($parsedTiers) ? json_encode($parsedTiers) : null;
+
+            try {
+                $stmt = $db->prepare("
+                    UPDATE cow_bingo_events 
+                    SET event_name = ?, 
+                        event_venue = ?, 
+                        event_start = ?, 
+                        event_description = ?, 
+                        cell_naming = ?, 
+                        allow_cell_selection = ?, 
+                        pricing_tiers = COALESCE(?, pricing_tiers) 
+                    WHERE id = ?
+                ");
+                $stmt->execute([$name, $venue ?: null, $startDate, $description ?: null, $cellNaming, $allowCellSelection, $pricingJson, $eventDbId]);
+            } catch (PDOException $e) {
+                if (strpos($e->getMessage(), 'cell_naming') !== false) {
+                    try {
+                        $db->exec("ALTER TABLE cow_bingo_events ADD COLUMN cell_naming VARCHAR(20) NOT NULL DEFAULT 'alpha' AFTER allow_cell_selection");
+                        $stmt = $db->prepare("
+                            UPDATE cow_bingo_events 
+                            SET event_name = ?, event_venue = ?, event_start = ?, event_description = ?, cell_naming = ?, allow_cell_selection = ?, pricing_tiers = COALESCE(?, pricing_tiers) 
+                            WHERE id = ?
+                        ");
+                        $stmt->execute([$name, $venue ?: null, $startDate, $description ?: null, $cellNaming, $allowCellSelection, $pricingJson, $eventDbId]);
+                    } catch (Exception $ex) {
+                        $stmtFallback = $db->prepare("
+                            UPDATE cow_bingo_events 
+                            SET event_name = ?, event_venue = ?, event_start = ?, event_description = ?, allow_cell_selection = ?, pricing_tiers = COALESCE(?, pricing_tiers) 
+                            WHERE id = ?
+                        ");
+                        $stmtFallback->execute([$name, $venue ?: null, $startDate, $description ?: null, $allowCellSelection, $pricingJson, $eventDbId]);
+                    }
+                } else {
+                    return "❌ Error updating event: " . htmlspecialchars($e->getMessage());
+                }
+            }
+
+            $_SESSION['selected_event_id'] = $eventDbId;
+            logAuditEvent($db, $eventDbId, 'event_updated', null, null, null, null, null, "Updated event details (Numbering: $cellNaming)", $adminName);
+            return "✅ Event details for '<strong>" . htmlspecialchars($name) . "</strong>' updated successfully.";
+
+        case 'toggle_cell_naming':
             $id = (int) ($_POST['event_db_id'] ?? 0);
             if (!$id) return '❌ Event not found.';
 
@@ -109,16 +252,41 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                 return '❌ Access denied: You do not have permission to manage this event.';
             }
 
+            try {
+                $db->prepare("UPDATE cow_bingo_events SET cell_naming = CASE WHEN cell_naming = 'numeric' THEN 'alpha' ELSE 'numeric' END WHERE id = ?")->execute([$id]);
+            } catch (PDOException $e) {
+                if (strpos($e->getMessage(), 'cell_naming') !== false) {
+                    $db->exec("ALTER TABLE cow_bingo_events ADD COLUMN cell_naming VARCHAR(20) NOT NULL DEFAULT 'alpha' AFTER allow_cell_selection");
+                    $db->prepare("UPDATE cow_bingo_events SET cell_naming = 'numeric' WHERE id = ?")->execute([$id]);
+                }
+            }
+
+            $st = $db->prepare("SELECT cell_naming FROM cow_bingo_events WHERE id = ?");
+            $st->execute([$id]);
+            $newMode = $st->fetchColumn() ?: 'alpha';
+            $_SESSION['selected_event_id'] = $id;
+            logAuditEvent($db, $id, 'toggle_cell_naming', null, null, null, null, null, "Switched numbering to " . ucfirst($newMode), $adminName);
+
+            return $newMode === 'numeric'
+                ? "✅ Numbering switched to Sequential Numbers (e.g. 1, 16, 43)."
+                : "✅ Numbering switched to Grid References (e.g. A1, D2, G4).";
+
+        case 'toggle_cell_selection':
+            $id = (int) ($_POST['event_db_id'] ?? 0);
+            if (!$id) return '❌ Event not found.';
+
+            if (!$isSuperAdmin && !canManageEvent($db, $currentAdminId, $id)) {
+                return '❌ Access denied.';
+            }
+
             $db->prepare("UPDATE cow_bingo_events SET allow_cell_selection = CASE WHEN allow_cell_selection = 0 THEN 1 ELSE 0 END WHERE id = ?")->execute([$id]);
             $st = $db->prepare("SELECT allow_cell_selection FROM cow_bingo_events WHERE id = ?");
             $st->execute([$id]);
             $newMode = (int)$st->fetchColumn() === 1;
+            $_SESSION['selected_event_id'] = $id;
 
             logAuditEvent($db, $id, 'toggle_square_choice', null, null, null, null, null, $newMode ? 'Square Choice Enabled' : 'Locked to Random Only', $adminName);
-
-            return $newMode 
-                ? "✅ Square Choice ENABLED: Buyers & iPad sellers can now pick specific squares." 
-                : "✅ Square Choice LOCKED: Game is now in Random Allocation Only mode.";
+            return $newMode ? "✅ Square Choice ENABLED." : "✅ Square Choice LOCKED to Random Only.";
 
         case 'link_hievents':
             $eventDbId = (int) ($_POST['event_db_id'] ?? 0);
@@ -158,8 +326,8 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                 } catch (Exception $e) {}
             }
             $venue = $details['settings']['location_details']['venue_name'] ?? null;
+            $pulledDesc = !empty($details['description']) ? strip_tags($details['description']) : null;
 
-            // Pull products from Hi.Events to populate local pricing tiers if not yet configured
             $pulledTiersJson = null;
             if ($hiEventsOnline && function_exists('fetchHiEventsProducts')) {
                 $rawProducts = fetchHiEventsProducts($hieventsId);
@@ -187,12 +355,13 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                     event_slug = COALESCE(event_slug, ?),
                     event_start = COALESCE(?, event_start),
                     event_venue = COALESCE(?, event_venue),
+                    event_description = COALESCE(event_description, ?),
                     pricing_tiers = COALESCE(pricing_tiers, ?)
                 WHERE id = ?
             ");
-            $stmt->execute([$hieventsId, $slug, $startDate, $venue, $pulledTiersJson, $eventDbId]);
+            $stmt->execute([$hieventsId, $slug, $startDate, $venue, $pulledDesc, $pulledTiersJson, $eventDbId]);
+            $_SESSION['selected_event_id'] = $eventDbId;
             logAuditEvent($db, $eventDbId, 'hievents_linked', null, null, null, null, null, "Linked to Hi.Events Event ID $hieventsId", $adminName);
-
             return "✅ Successfully linked to Hi.Events Event ID <strong>$hieventsId</strong>. Existing local pricing and URLs preserved.";
 
         case 'toggle_event':
@@ -200,7 +369,7 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             if (!$id) return '❌ Event not found.';
 
             if (!$isSuperAdmin && !canManageEvent($db, $currentAdminId, $id)) {
-                return '❌ Access denied: You do not have permission to manage this event.';
+                return '❌ Access denied.';
             }
 
             $db->prepare("UPDATE cow_bingo_events SET is_active = NOT is_active WHERE id = ?")->execute([$id]);
@@ -208,6 +377,7 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $st->execute([$id]);
             $isActive = (int)$st->fetchColumn() === 1;
             $stateText = $isActive ? 'Event Activated' : 'Event Deactivated';
+            $_SESSION['selected_event_id'] = $id;
             logAuditEvent($db, $id, 'toggle_event_active', null, null, null, null, null, $stateText, $adminName);
             return "✅ Event status toggled: $stateText.";
 
@@ -231,9 +401,13 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                 return '❌ Please select at least one cell from the grid or use Quick Random.';
             }
 
-            $evStmt = $db->prepare("SELECT pricing_tiers FROM cow_bingo_events WHERE id = ?");
+            $evStmt = $db->prepare("SELECT grid_cols, grid_rows, cell_naming, pricing_tiers FROM cow_bingo_events WHERE id = ?");
             $evStmt->execute([$eventDbId]);
-            $evTiersRaw = $evStmt->fetchColumn();
+            $evRow = $evStmt->fetch(PDO::FETCH_ASSOC) ?: [];
+            $gridCols = (int)($evRow['grid_cols'] ?? 16);
+            $gridRows = (int)($evRow['grid_rows'] ?? 16);
+            $cellNaming = $evRow['cell_naming'] ?? 'alpha';
+            $evTiersRaw = $evRow['pricing_tiers'] ?? '';
             $evTiers = !empty($evTiersRaw) ? (json_decode($evTiersRaw, true) ?: []) : [];
 
             $qty = count($selectedCells);
@@ -258,6 +432,24 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $multi = count($selectedCells) > 1;
 
             foreach ($selectedCells as $cell) {
+                $canonicalRef = normalizeCellRef($cell, $gridCols);
+
+                if (preg_match('/^([A-Z]+)(\d+)$/i', $canonicalRef, $m)) {
+                    $colLetters = strtoupper($m[1]);
+                    $rowNum = (int)$m[2];
+                    $colNum = 0;
+                    for ($cIdx = 0; $cIdx < strlen($colLetters); $cIdx++) {
+                        $colNum = $colNum * 26 + (ord($colLetters[$cIdx]) - 64);
+                    }
+                    if ($colNum < 1 || $colNum > $gridCols || $rowNum < 1 || $rowNum > $gridRows) {
+                        $db->rollBack();
+                        return "❌ Cell <strong>" . htmlspecialchars($cell) . "</strong> is outside the grid bounds ($gridCols x $gridRows).";
+                    }
+                } else {
+                    $db->rollBack();
+                    return "❌ Invalid cell coordinate format: <strong>" . htmlspecialchars($cell) . "</strong>.";
+                }
+
                 $ticketId = $multi ? ($batchId . '-' . $idx++) : ($rawTicketId ?: $batchId);
 
                 try {
@@ -267,13 +459,13 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                         $batchId,
                         $buyerName,
                         $buyerEmail ?: null,
-                        strtoupper($cell),
+                        strtoupper($canonicalRef),
                         $isPaid,
                         $batchTotal,
                         $paidAmount,
                         $adminName
                     ]);
-                    $assignedList[] = strtoupper($cell);
+                    $assignedList[] = strtoupper($canonicalRef);
                 } catch (PDOException $e) {
                     $isDuplicate = ($e->errorInfo[1] ?? null) === 1062
                         || strpos($e->getMessage(), '1062') !== false
@@ -290,7 +482,7 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                     }
 
                     $hasCollision = true;
-                    $collisionCell = $cell;
+                    $collisionCell = formatCellRef($canonicalRef, $gridCols, $cellNaming);
                     break;
                 }
             }
@@ -301,7 +493,8 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             }
 
             $db->commit();
-            $cellStr = implode(', ', $assignedList);
+            $_SESSION['selected_event_id'] = $eventDbId;
+            $cellStr = implode(', ', array_map(fn($c) => formatCellRef($c, $gridCols, $cellNaming), $assignedList));
             logAuditEvent($db, $eventDbId, 'cell_assigned', $cellStr, $batchId, $batchId, $buyerName, $batchTotal, "Assigned $qty squares: $cellStr", $adminName);
 
             $count = count($assignedList);
@@ -312,7 +505,7 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $cellId = (int) ($_POST['cell_id'] ?? 0);
             if (!$cellId) return '❌ Cell not found.';
 
-            $stmt = $db->prepare("SELECT c.*, e.hievents_event_id, e.pricing_tiers FROM cow_bingo_cells c JOIN cow_bingo_events e ON e.id = c.event_id WHERE c.id = ?");
+            $stmt = $db->prepare("SELECT c.*, e.grid_cols, e.cell_naming, e.hievents_event_id, e.pricing_tiers FROM cow_bingo_cells c JOIN cow_bingo_events e ON e.id = c.event_id WHERE c.id = ?");
             $stmt->execute([$cellId]);
             $cell = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!$cell) return '❌ Cell not found.';
@@ -323,6 +516,8 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             }
 
             $orderId = $cell['order_id'];
+            $gridCols = (int)($cell['grid_cols'] ?? 16);
+            $cellNaming = $cell['cell_naming'] ?? 'alpha';
             $pricingTiers = !empty($cell['pricing_tiers']) ? (json_decode($cell['pricing_tiers'], true) ?: []) : [];
 
             if (!empty($orderId)) {
@@ -360,7 +555,6 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                 logAuditEvent($db, $cellEventId, 'marked_paid', $cell['cell_reference'], $cell['ticket_id'], null, $cell['buyer_name'], $singleTotal, 'Single square marked paid', $adminName);
             }
 
-            // Synchronize with Hi.Events if linked to online order
             $syncMsg = '';
             if (!empty($cell['hievents_event_id']) && !empty($orderId) && strpos($orderId, 'MANUAL-') !== 0 && strpos($orderId, 'CASH-') !== 0) {
                 $hiSuccess = markHiEventsOrderAsPaid($cell['hievents_event_id'], $orderId);
@@ -369,7 +563,9 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                     : " (Recorded locally; Hi.Events currently offline/unreachable)";
             }
 
-            return "✅ Square <strong>{$cell['cell_reference']}</strong> (" . htmlspecialchars($cell['buyer_name']) . ") marked as Paid.$syncMsg";
+            $_SESSION['selected_event_id'] = $cellEventId;
+            $displayRef = formatCellRef($cell['cell_reference'], $gridCols, $cellNaming);
+            return "✅ Square <strong>{$displayRef}</strong> (" . htmlspecialchars($cell['buyer_name']) . ") marked as Paid.$syncMsg";
 
         case 'delete_cell':
             $cellId = (int) ($_POST['cell_id'] ?? 0);
@@ -391,7 +587,8 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             logAuditEvent($db, $cellEventId, 'cell_removed', $cell['cell_reference'], $cell['ticket_id'], $cell['order_id'], $cell['buyer_name'], $amount, $paidStatus, $adminName);
 
             $db->prepare("DELETE FROM cow_bingo_cells WHERE id = ?")->execute([$cellId]);
-            return "✅ Square <strong>{$cell['cell_reference']}</strong> assignment removed from grid.";
+            $_SESSION['selected_event_id'] = $cellEventId;
+            return "✅ Square assignment removed from grid.";
 
         case 'cancel_and_notify':
             $cellId = (int) ($_POST['cell_id'] ?? 0);
@@ -421,7 +618,7 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
 
             if ($isExternalOrder && function_exists('cancelHiEventsOrder') && (!defined('HIEVENTS_ENABLED') || HIEVENTS_ENABLED)) {
                 $subject = "Ticket Cancellation Notice - Payment Not Received";
-                $body = "Hi {$cell['buyer_name']},\n\nYour Cow Bingo square reservation (Ticket: {$cell['ticket_id']}) has been cancelled as payment was not received.\n\nThank you.";
+                $body = "Hi {$cell['buyer_name']},\n\nYour Cow Pat Bingo square reservation (Ticket: {$cell['ticket_id']}) has been cancelled as payment was not received.\n\nThank you.";
                 if (function_exists('messageHiEventsOrder')) {
                     messageHiEventsOrder($cell['hievents_event_id'], $orderId, $subject, $body);
                 }
@@ -429,16 +626,16 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             }
 
             logAuditEvent($db, $cellEventId, 'cell_cancelled', $cell['cell_reference'], $cell['ticket_id'], $cell['order_id'], $cell['buyer_name'], 0.00, 'Cancelled unpaid reservation; buyer notified', $adminName);
-
             $db->prepare("DELETE FROM cow_bingo_cells WHERE id = ?")->execute([$cellId]);
+            $_SESSION['selected_event_id'] = $cellEventId;
             return "✅ Cancelled square for <strong>{$buyer}</strong> (Ticket: {$ticket}). Square returned to paddock.";
 
         case 'assign_prize_by_ref':
             $eventDbId = (int) ($_POST['event_db_id'] ?? 0);
-            $cellRef = strtoupper(trim($_POST['cell_reference'] ?? ''));
+            $rawRef = trim($_POST['cell_reference'] ?? '');
             $prize = trim($_POST['prize'] ?? '');
 
-            if (!$eventDbId || !$cellRef || !$prize) {
+            if (!$eventDbId || !$rawRef || !$prize) {
                 return '❌ Cell reference and prize text are required.';
             }
 
@@ -446,14 +643,25 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
                 return '❌ Access denied: You do not have permission to manage this event.';
             }
 
+            $evStmt = $db->prepare("SELECT grid_cols, cell_naming FROM cow_bingo_events WHERE id = ?");
+            $evStmt->execute([$eventDbId]);
+            $evRow = $evStmt->fetch(PDO::FETCH_ASSOC);
+            $gridCols = (int) ($evRow['grid_cols'] ?? 16);
+            $cellNaming = $evRow['cell_naming'] ?? 'alpha';
+
+            $canonicalRef = normalizeCellRef($rawRef, $gridCols);
+
             $stmt = $db->prepare("UPDATE cow_bingo_cells SET prize = ? WHERE event_id = ? AND cell_reference = ?");
-            $stmt->execute([$prize, $eventDbId, $cellRef]);
+            $stmt->execute([$prize, $eventDbId, $canonicalRef]);
 
             if ($stmt->rowCount() > 0) {
-                logAuditEvent($db, $eventDbId, 'prize_assigned', $cellRef, null, null, null, null, "Prize awarded: $prize", $adminName);
-                return "✅ Prize '<strong>" . htmlspecialchars($prize) . "</strong>' assigned to cell <strong>$cellRef</strong>.";
+                $_SESSION['selected_event_id'] = $eventDbId;
+                $displayRef = formatCellRef($canonicalRef, $gridCols, $cellNaming);
+                $displayNote = ($cellNaming === 'numeric') ? " (Square #$displayRef / $canonicalRef)" : " ($canonicalRef)";
+                logAuditEvent($db, $eventDbId, 'prize_assigned', $canonicalRef, null, null, null, null, "Prize awarded: $prize", $adminName);
+                return "✅ Prize '<strong>" . htmlspecialchars($prize) . "</strong>' assigned to cell <strong>" . htmlspecialchars($displayRef) . "</strong>$displayNote.";
             }
-            return "❌ Cell <strong>$cellRef</strong> not found or not sold.";
+            return "❌ Square <strong>" . htmlspecialchars($rawRef) . "</strong> not found or not sold.";
 
         case 'assign_prize':
             $cellId = (int) ($_POST['cell_id'] ?? 0);
@@ -473,9 +681,30 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             }
 
             $db->prepare("UPDATE cow_bingo_cells SET prize = ? WHERE id = ?")->execute([$prize ?: null, $cellId]);
+            $_SESSION['selected_event_id'] = $cellEventId;
             $actionLabel = $prize ? "Prize awarded: $prize" : "Prize removed";
             logAuditEvent($db, $cellEventId, 'prize_assigned', $cell['cell_reference'], $cell['ticket_id'], null, $cell['buyer_name'], null, $actionLabel, $adminName);
             return $prize ? "✅ Prize assigned." : "✅ Prize removed.";
+
+        case 'sync_attendees':
+            $eventDbId = (int) ($_POST['event_db_id'] ?? 0);
+            if (!$isSuperAdmin && !canManageEvent($db, $currentAdminId, $eventDbId)) {
+                return '❌ Access denied.';
+            }
+
+            $evStmt = $db->prepare("SELECT * FROM cow_bingo_events WHERE id = ?");
+            $evStmt->execute([$eventDbId]);
+            $ev = $evStmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$ev) return '❌ Event not found.';
+            if (empty($ev['hievents_event_id'])) {
+                return '⚠️ This is a standalone event not yet linked to Hi.Events.';
+            }
+
+            $synced = syncAttendeesFromHiEvents($db, $ev);
+            $_SESSION['selected_event_id'] = $eventDbId;
+            logAuditEvent($db, $eventDbId, 'attendees_synced', null, null, null, null, null, "Synced $synced cells from Hi.Events", $adminName);
+            return "✅ Sync complete. $synced new cells assigned.";
 
         case 'purge_contacts':
             $eventDbId = (int) ($_POST['event_db_id'] ?? 0);
@@ -488,9 +717,10 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             $stmt = $db->prepare("UPDATE cow_bingo_cells SET buyer_email = NULL WHERE event_id = ? AND buyer_email IS NOT NULL AND buyer_email != ''");
             $stmt->execute([$eventDbId]);
             $count = $stmt->rowCount();
+            $_SESSION['selected_event_id'] = $eventDbId;
 
             logAuditEvent($db, $eventDbId, 'contacts_purged', null, null, null, null, null, "Purged customer contacts for $count squares (NZ Privacy Act)", $adminName);
-            return "✅ Privacy cleanup complete: Removed contact details (emails & phone numbers) from $count square" . ($count === 1 ? '' : 's') . ".";
+            return "✅ Privacy cleanup complete: Removed contact details from $count square" . ($count === 1 ? '' : 's') . ".";
 
         case 'create_admin':
             $newUser = trim($_POST['new_username'] ?? '');
@@ -518,6 +748,10 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             }
 
             if ($newUser && $newPass && $newName) {
+                if (strlen($newPass) < 8) {
+                    return '❌ Password must be at least 8 characters long.';
+                }
+
                 try {
                     $stmt = $db->prepare("INSERT INTO cow_bingo_admins (username, password_hash, display_name, is_super_admin, role) VALUES (?, ?, ?, ?, ?)");
                     $stmt->execute([$newUser, password_hash($newPass, PASSWORD_DEFAULT), $newName, $newSuper, $newRole]);

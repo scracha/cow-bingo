@@ -1,6 +1,6 @@
 <?php
 /**
- * Cow Bingo - Field POS / iPad Seller Interface with Interactive Grid & Cached Discounts
+ * Cow Pat Bingo - Field POS / Mobile & iPad Seller Interface with Mobile-Optimized Layout
  */
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/includes/bingo_helpers.php';
@@ -20,7 +20,7 @@ if (!isset($_SESSION['admin_id'])) {
 }
 
 $adminId = (int)$_SESSION['admin_id'];
-$adminName = $_SESSION['admin_name'] ?? 'iPad';
+$adminName = $_SESSION['admin_name'] ?? 'Device';
 $isSuperAdmin = $_SESSION['is_super_admin'] ?? false;
 
 // Determine active event for this device
@@ -39,7 +39,7 @@ if ($isSuperAdmin) {
 }
 
 if (!$event) {
-    die("<h3>No active event assigned to this iPad.</h3><p><a href='admin.php?logout'>Log Out</a></p>");
+    die("<h3>No active event assigned to this device.</h3><p><a href='admin.php?logout'>Log Out</a></p>");
 }
 
 $eventId = (int)$event['id'];
@@ -98,7 +98,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $errorMessage = 'Please select at least one square.';
         } else {
             $cleanDevice = preg_replace('/[^A-Za-z0-9]/', '', strtoupper($adminName));
-            $batchId = 'CASH-' . ($cleanDevice ?: 'IPAD') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 5));
+            $batchId = 'CASH-' . ($cleanDevice ?: 'POS') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 5));
+            $cellCount = count($selectedCells);
+            $batchTotal = calculateBatchPrice($cellCount, $pricingTiers);
+            $pricePerSquare = round($batchTotal / max(1, $cellCount), 2);
             
             $db->beginTransaction();
             $assignedList = [];
@@ -106,15 +109,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             $insertStmt = $db->prepare("
                 INSERT INTO cow_bingo_cells 
-                (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, assigned_by) 
-                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, order_amount, price_paid, payment_method, assigned_by) 
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'cash', ?)
             ");
 
             $i = 1;
             foreach ($selectedCells as $cell) {
                 $ticketId = $batchId . '-' . $i++;
                 try {
-                    $insertStmt->execute([$eventId, $ticketId, $batchId, $buyerName, $buyerContact, strtoupper($cell), $adminName]);
+                    $insertStmt->execute([
+                        $eventId, 
+                        $ticketId, 
+                        $batchId, 
+                        $buyerName, 
+                        $buyerContact ?: null, 
+                        strtoupper($cell), 
+                        $batchTotal, 
+                        $pricePerSquare, 
+                        $adminName
+                    ]);
                     $assignedList[] = strtoupper($cell);
                 } catch (PDOException $e) {
                     $hasCollision = true;
@@ -127,11 +140,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $errorMessage = "⚠️ Square $cell was just taken by another seller! Please pick a different square.";
             } else {
                 $db->commit();
+                $cellStr = implode(', ', $assignedList);
+                logAuditEvent($db, $eventId, 'cell_assigned', $cellStr, $batchId, $batchId, $buyerName, $batchTotal, "POS Cash Sale ({$cellCount} sq): $cellStr", $adminName);
                 $lastAssigned = [
                     'cells' => $assignedList,
                     'name' => $buyerName,
                     'batch' => $batchId,
-                    'total' => $_POST['calculated_total'] ?? '0.00'
+                    'total' => number_format($batchTotal, 2)
                 ];
             }
         }
@@ -161,10 +176,10 @@ $csrfToken = getCsrfToken();
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <title><?= htmlspecialchars($event['event_name']) ?> - iPad POS</title>
+    <title><?= htmlspecialchars($event['event_name']) ?> - Cow Pat Bingo POS</title>
     <style>
         * { box-sizing: border-box; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1f3a0f; color: #fff; margin: 0; padding: 10px 10px 120px; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1f3a0f; color: #fff; margin: 0; padding: 10px 10px 140px; }
         .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
         .badge { background: #4a7c23; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 0.9em; }
         
@@ -175,7 +190,7 @@ $csrfToken = getCsrfToken();
         }
 
         .grid-container { background: white; padding: 10px; border-radius: 12px; overflow-x: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.3); -webkit-overflow-scrolling: touch; }
-        .grid { display: grid; grid-template-columns: 24px repeat(<?= $gridCols ?>, minmax(36px, 1fr)); gap: 3px; }
+        .grid { display: grid; grid-template-columns: 24px repeat(<?= $gridCols ?>, minmax(32px, 1fr)); gap: 3px; }
         .header-cell { color: #666; font-size: 11px; font-weight: bold; display: flex; align-items: center; justify-content: center; }
         .cell {
             aspect-ratio: 1; border-radius: 4px; font-size: 11px; font-weight: bold;
@@ -189,23 +204,84 @@ $csrfToken = getCsrfToken();
             transform: scale(1.08); z-index: 2; box-shadow: 0 0 8px rgba(255, 193, 7, 0.8);
         }
         
-        .quick-pick { display: flex; gap: 8px; margin: 12px 0; overflow-x: auto; align-items: center; }
-        .quick-btn { background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 8px 14px; border-radius: 20px; font-weight: bold; font-size: 0.85em; cursor: pointer; white-space: nowrap; }
+        /* MOBILE OPTIMIZED QUICK BUTTONS (No horizontal scroll) */
+        .quick-pick {
+            display: flex;
+            gap: 6px;
+            margin: 10px 0;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .quick-label { font-size: 0.82em; opacity: 0.85; font-weight: bold; margin-right: 2px; }
+        .quick-btn {
+            background: rgba(255,255,255,0.18);
+            border: 1px solid rgba(255,255,255,0.35);
+            color: white;
+            padding: 7px 11px;
+            border-radius: 16px;
+            font-weight: bold;
+            font-size: 0.82em;
+            cursor: pointer;
+            white-space: nowrap;
+            flex: 1 1 auto;
+            text-align: center;
+        }
         .quick-btn:active { background: #ffc107; color: #000; }
+        .quick-btn.btn-clear { background: #dc3545; border: none; flex: 0 1 auto; }
 
+        /* CHECKOUT TRAY */
         .checkout-tray {
             position: fixed; bottom: 0; left: 0; right: 0; background: #ffffff; color: #222;
-            padding: 12px 16px; box-shadow: 0 -4px 20px rgba(0,0,0,0.4); border-top-left-radius: 16px; border-top-right-radius: 16px; z-index: 100;
+            padding: 10px 14px 14px; box-shadow: 0 -4px 20px rgba(0,0,0,0.4); border-top-left-radius: 16px; border-top-right-radius: 16px; z-index: 100;
         }
         .tray-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .tray-total { font-size: 1.3em; font-weight: 900; color: #2d5016; }
-        .inputs-row { display: flex; gap: 8px; }
-        .inputs-row input { flex: 1; padding: 12px; border: 2px solid #ccc; border-radius: 8px; font-size: 1em; }
-        .btn-confirm { background: #2d5016; color: white; border: none; padding: 12px 20px; border-radius: 8px; font-size: 1em; font-weight: bold; cursor: pointer; }
+        
+        /* RESPONSIVE INPUTS FOR PHONES */
+        .inputs-row {
+            display: flex;
+            gap: 8px;
+        }
+        .inputs-row input {
+            flex: 1;
+            min-width: 0;
+            padding: 10px 12px;
+            border: 2px solid #ccc;
+            border-radius: 8px;
+            font-size: 0.95em;
+        }
+        .btn-confirm {
+            background: #2d5016; color: white; border: none; padding: 11px 18px;
+            border-radius: 8px; font-size: 1em; font-weight: bold; cursor: pointer; white-space: nowrap;
+        }
         .btn-confirm:disabled { background: #aaa; cursor: not-allowed; }
 
-        .banner-success { background: #d4edda; color: #155724; border: 2px solid #28a745; padding: 12px; border-radius: 8px; margin-bottom: 10px; text-align: center; }
-        .banner-error { background: #f8d7da; color: #721c24; border: 2px solid #dc3545; padding: 12px; border-radius: 8px; margin-bottom: 10px; text-align: center; }
+        @media (max-width: 600px) {
+            body { padding: 8px 8px 170px; }
+            .inputs-row {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 6px;
+            }
+            .inputs-row input {
+                padding: 9px 10px;
+                font-size: 0.9em;
+            }
+            .btn-confirm {
+                grid-column: 1 / -1;
+                width: 100%;
+                padding: 12px;
+                font-size: 1.05em;
+            }
+            .quick-btn {
+                padding: 6px 8px;
+                font-size: 0.78em;
+            }
+            .grid { gap: 2px; }
+        }
+
+        .banner-success { background: #d4edda; color: #155724; border: 2px solid #28a745; padding: 10px; border-radius: 8px; margin-bottom: 10px; text-align: center; font-size: 0.9em; }
+        .banner-error { background: #f8d7da; color: #721c24; border: 2px solid #dc3545; padding: 10px; border-radius: 8px; margin-bottom: 10px; text-align: center; font-size: 0.9em; }
         .recent-sales { margin-top: 15px; font-size: 0.85em; opacity: 0.9; }
     </style>
 </head>
@@ -213,13 +289,13 @@ $csrfToken = getCsrfToken();
 
 <div class="top-bar">
     <span class="badge">📱 <?= htmlspecialchars($adminName) ?></span>
-    <span style="font-size:0.9em;"><?= $allowCellSelection ? 'Tap squares or use quick random:' : 'Random Mode active:' ?></span>
+    <span style="font-size:0.85em;"><?= $allowCellSelection ? 'Tap squares or pick random:' : 'Random Mode active:' ?></span>
     <a href="admin.php?logout" style="color:#ffc107;text-decoration:none;font-size:0.85em;">Logout</a>
 </div>
 
 <?php if (!$allowCellSelection): ?>
     <div class="mode-banner">
-        🎲 <strong>Random Allocation Only Mode</strong> &mdash; Manual square tapping is disabled. Tap +1, +3, +5, or +10 below to assign tickets.
+        🎲 <strong>Random Allocation Only Mode</strong> — Square tapping is disabled. Tap +1, +3, +5, or +10 below to assign tickets.
     </div>
 <?php endif; ?>
 
@@ -235,12 +311,12 @@ $csrfToken = getCsrfToken();
 <?php endif; ?>
 
 <div class="quick-pick">
-    <span style="font-size:0.8em;opacity:0.8;">🎲 Quick:</span>
-    <button type="button" class="quick-btn" onclick="addRandomSquares(1)">+1 Random</button>
-    <button type="button" class="quick-btn" onclick="addRandomSquares(3)">+3 Random</button>
-    <button type="button" class="quick-btn" onclick="addRandomSquares(5)">+5 Random</button>
-    <button type="button" class="quick-btn" onclick="addRandomSquares(10)">+10 Random</button>
-    <button type="button" class="quick-btn" style="background:#dc3545;border:none;" onclick="clearSelected()">Clear</button>
+    <span class="quick-label">🎲 Quick:</span>
+    <button type="button" class="quick-btn" onclick="addRandomSquares(1)">+1</button>
+    <button type="button" class="quick-btn" onclick="addRandomSquares(3)">+3</button>
+    <button type="button" class="quick-btn" onclick="addRandomSquares(5)">+5</button>
+    <button type="button" class="quick-btn" onclick="addRandomSquares(10)">+10</button>
+    <button type="button" class="quick-btn btn-clear" onclick="clearSelected()">Clear</button>
 </div>
 
 <div class="grid-container">
@@ -285,12 +361,12 @@ $csrfToken = getCsrfToken();
         <input type="hidden" name="calculated_total" id="calculatedTotalInput" value="0.00">
 
         <div class="tray-top">
-            <span id="selectedSummary" style="font-weight:bold;font-size:0.95em;">0 squares selected</span>
+            <span id="selectedSummary" style="font-weight:bold;font-size:0.9em;">0 squares selected</span>
             <span class="tray-total" id="totalDisplay">$0.00</span>
         </div>
         <div class="inputs-row">
             <input type="text" name="buyer_name" id="buyerName" placeholder="Buyer Name *" required>
-            <input type="text" name="buyer_contact" placeholder="Phone/Email (Optional)">
+            <input type="text" name="buyer_contact" placeholder="Phone / Email">
             <button type="submit" class="btn-confirm" id="submitBtn" disabled>Collect Cash</button>
         </div>
     </form>
@@ -374,7 +450,7 @@ $csrfToken = getCsrfToken();
         document.getElementById('selectedCellsInput').value = Array.from(selected).join(',');
         document.getElementById('calculatedTotalInput').value = total;
         document.getElementById('totalDisplay').textContent = '$' + total;
-        document.getElementById('selectedSummary').textContent = `${qty} square${qty === 1 ? '' : 's'} (${Array.from(selected).join(', ') || 'None'})`;
+        document.getElementById('selectedSummary').textContent = `${qty} sq (${Array.from(selected).join(', ') || 'None'})`;
         document.getElementById('submitBtn').disabled = (qty === 0);
     }
 </script>

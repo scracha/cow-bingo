@@ -1,93 +1,268 @@
 <?php
 // views/logs_view.php
-?>
-<h2>📜 Activity &amp; Audit Trail</h2>
-<p style="color:#666; font-size:0.9em; margin-bottom:15px;">
-    Permanent record of squares assigned, removed, cancelled, paid, or prizes awarded for this event.
-</p>
 
-<!-- Quick Filter Buttons -->
-<div style="margin-bottom:12px; display:flex; gap:8px; flex-wrap:wrap;">
-    <button type="button" class="btn" style="background:#2d5016; font-size:0.8em; padding:4px 10px;" onclick="filterAudit('all')">All Events</button>
-    <button type="button" class="btn" style="background:#dc3545; font-size:0.8em; padding:4px 10px;" onclick="filterAudit('removed')">🗑️ Removals</button>
-    <button type="button" class="btn" style="background:#d97706; font-size:0.8em; padding:4px 10px;" onclick="filterAudit('cancelled')">⚠️ Cancellations</button>
-    <button type="button" class="btn" style="background:#15803d; font-size:0.8em; padding:4px 10px;" onclick="filterAudit('paid')">💵 Payments</button>
-    <button type="button" class="btn" style="background:#b45309; font-size:0.8em; padding:4px 10px;" onclick="filterAudit('prize')">🏆 Prizes</button>
-    <button type="button" class="btn" style="background:#4b5563; font-size:0.8em; padding:4px 10px;" onclick="filterAudit('admin')">⚙️ Setup / Admin</button>
+if (isset($_GET['select_event'])) {
+    $_SESSION['selected_event_id'] = (int)$_GET['select_event'];
+}
+
+$selectedEventId = (int)($_SESSION['selected_event_id'] ?? 0);
+
+// Load all events for the filter dropdown
+$allEventsStmt = $db->query("SELECT id, event_name, hievents_event_id FROM cow_bingo_events ORDER BY id DESC");
+$allEvents = $allEventsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+$currentEventName = 'All Events';
+$currentHiEventsId = null;
+foreach ($allEvents as $e) {
+    if ((int)$e['id'] === $selectedEventId) {
+        $currentEventName = $e['event_name'];
+        $currentHiEventsId = $e['hievents_event_id'] ?: null;
+        break;
+    }
+}
+
+// 1. Fetch Audit Log Records
+if ($selectedEventId > 0) {
+    $auditStmt = $db->prepare("
+        SELECT a.*, e.event_name
+        FROM cow_bingo_audit_log a
+        LEFT JOIN cow_bingo_events e ON e.id = a.event_id
+        WHERE a.event_id = ?
+        ORDER BY a.id DESC
+        LIMIT 250
+    ");
+    $auditStmt->execute([$selectedEventId]);
+} else {
+    $auditStmt = $db->query("
+        SELECT a.*, e.event_name
+        FROM cow_bingo_audit_log a
+        LEFT JOIN cow_bingo_events e ON e.id = a.event_id
+        ORDER BY a.id DESC
+        LIMIT 250
+    ");
+}
+$auditRows = $auditStmt ? $auditStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+
+// 2. Fetch Webhook Log Records (Strictly event-scoped if selected)
+if ($selectedEventId > 0 && !empty($currentHiEventsId)) {
+    $webhookStmt = $db->prepare("
+        SELECT *
+        FROM webhook_log
+        WHERE hievents_event_id = ?
+        ORDER BY id DESC
+        LIMIT 100
+    ");
+    $webhookStmt->execute([(string)$currentHiEventsId]);
+} elseif ($selectedEventId > 0 && empty($currentHiEventsId)) {
+    $webhookStmt = null;
+} else {
+    $webhookStmt = $db->query("SELECT * FROM webhook_log ORDER BY id DESC LIMIT 100");
+}
+$webhookRows = $webhookStmt ? $webhookStmt->fetchAll(PDO::FETCH_ASSOC) : [];
+?>
+<div class="tab-content-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; flex-wrap:wrap; gap:12px;">
+    <div>
+        <h2 style="margin:0; font-size:1.4em; color:#2d5016;">📋 Activity &amp; Audit Trail</h2>
+        <p style="margin:4px 0 0 0; color:#666; font-size:0.9em;">
+            Live forensic ledger of square allocations, cash payments, winners, and settings changes.
+        </p>
+    </div>
+
+    <!-- Scope Filter by Event -->
+    <div style="display:flex; align-items:center; gap:8px;">
+        <label for="auditEventSelect" style="font-size:0.85em; font-weight:bold; color:#333;">Filter Event:</label>
+        <select id="auditEventSelect" onchange="window.location='admin.php?tab=logs&select_event=' + this.value;" style="padding:8px 12px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9em; background:#fff; font-weight:500;">
+            <option value="0" <?= $selectedEventId === 0 ? 'selected' : '' ?>>🌐 All Events (Global)</option>
+            <?php foreach ($allEvents as $evOption): ?>
+                <option value="<?= (int)$evOption['id'] ?>" <?= (int)$evOption['id'] === $selectedEventId ? 'selected' : '' ?>>
+                    🐮 <?= htmlspecialchars($evOption['event_name']) ?> (#<?= (int)$evOption['id'] ?>)
+                </option>
+            <?php endforeach; ?>
+        </select>
+    </div>
 </div>
 
-<table id="auditTable">
-    <thead>
-        <tr>
-            <th>Time</th>
-            <th>Action</th>
-            <th>Cell</th>
-            <th>Ticket / Batch Ref</th>
-            <th>Buyer Name</th>
-            <th>Amount</th>
-            <th>Performed By</th>
-            <th>Details / Context</th>
-        </tr>
-    </thead>
-    <tbody>
-        <?php foreach ($auditLogs as $log): 
-            $action = $log['action'];
-            $badgeStyle = 'background:#e5e7eb; color:#374151;';
-            $actionLabel = $action;
-            $category = 'other';
+<!-- 6 Interactive Filter Category Pills -->
+<div class="audit-category-pills" style="display:flex; gap:8px; margin-bottom:18px; flex-wrap:wrap;">
+    <button type="button" class="audit-pill active" data-cat="all" onclick="setAuditCategory('all', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #2d5016; background:#2d5016; color:#fff; font-size:0.85em; font-weight:bold; cursor:pointer;">
+        📋 All Activity (<?= count($auditRows) ?>)
+    </button>
+    <button type="button" class="audit-pill" data-cat="squares" onclick="setAuditCategory('squares', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #cbd5e1; background:#fff; color:#334155; font-size:0.85em; font-weight:bold; cursor:pointer;">
+        🎟️ Squares
+    </button>
+    <button type="button" class="audit-pill" data-cat="payments" onclick="setAuditCategory('payments', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #cbd5e1; background:#fff; color:#334155; font-size:0.85em; font-weight:bold; cursor:pointer;">
+        💵 Payments
+    </button>
+    <button type="button" class="audit-pill" data-cat="prizes" onclick="setAuditCategory('prizes', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #cbd5e1; background:#fff; color:#334155; font-size:0.85em; font-weight:bold; cursor:pointer;">
+        🏆 Prizes
+    </button>
+    <button type="button" class="audit-pill" data-cat="settings" onclick="setAuditCategory('settings', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #cbd5e1; background:#fff; color:#334155; font-size:0.85em; font-weight:bold; cursor:pointer;">
+        🐮 Settings
+    </button>
+    <button type="button" class="audit-pill" data-cat="webhooks" onclick="setAuditCategory('webhooks', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #cbd5e1; background:#fff; color:#334155; font-size:0.85em; font-weight:bold; cursor:pointer;">
+        🔗 Webhooks (<?= count($webhookRows) ?>)
+    </button>
+</div>
 
-            if (strpos($action, 'removed') !== false) {
-                $badgeStyle = 'background:#fee2e2; color:#991b1b;';
-                $actionLabel = '🗑️ Square Removed';
-                $category = 'removed';
-            } elseif (strpos($action, 'cancelled') !== false) {
-                $badgeStyle = 'background:#fef3c7; color:#92400e;';
-                $actionLabel = '⚠️ Cancelled';
-                $category = 'cancelled';
-            } elseif ($action === 'marked_paid') {
-                $badgeStyle = 'background:#dcfce7; color:#166534;';
-                $actionLabel = '💵 Marked Paid';
-                $category = 'paid';
-            } elseif (strpos($action, 'prize') !== false) {
-                $badgeStyle = 'background:#fef9c3; color:#854d0e;';
-                $actionLabel = '🏆 Prize';
-                $category = 'prize';
-            } elseif ($action === 'contacts_purged') {
-                $badgeStyle = 'background:#e0e7ff; color:#3730a3;';
-                $actionLabel = '🔒 Contacts Purged';
-                $category = 'admin';
-            } elseif ($action === 'cell_assigned') {
-                $badgeStyle = 'background:#f0fdf4; color:#15803d;';
-                $actionLabel = '🎲 Cell Assigned';
-                $category = 'other';
-            } elseif (in_array($action, ['event_created', 'toggle_square_choice', 'toggle_event_active', 'hievents_linked'], true)) {
-                $badgeStyle = 'background:#f3f4f6; color:#1f2937; border: 1px solid #d1d5db;';
-                $actionLabel = '⚙️ ' . ucwords(str_replace('_', ' ', $action));
-                $category = 'admin';
-            }
-        ?>
-        <tr data-cat="<?= $category ?>">
-            <td><?= date('d M Y, g:ia', strtotime($log['created_at'])) ?></td>
-            <td><span style="padding:3px 8px; border-radius:4px; font-weight:bold; font-size:0.82em; <?= $badgeStyle ?>"><?= $actionLabel ?></span></td>
-            <td><strong><?= htmlspecialchars($log['cell_reference'] ?? '—') ?></strong></td>
-            <td><code style="font-size:0.85em;"><?= htmlspecialchars($log['ticket_id'] ?: ($log['order_id'] ?? '—')) ?></code></td>
-            <td><?= htmlspecialchars($log['buyer_name'] ?? '—') ?></td>
-            <td><?= $log['amount'] !== null ? ('$' . number_format((float)$log['amount'], 2)) : '—' ?></td>
-            <td><strong><?= htmlspecialchars($log['performed_by']) ?></strong></td>
-            <td style="font-size:0.88em; color:#555;"><?= htmlspecialchars($log['details'] ?? '') ?></td>
-        </tr>
-        <?php endforeach; ?>
-        <?php if (empty($auditLogs)): ?>
-        <tr><td colspan="8" style="text-align:center; color:#999; padding:20px;">No activity logged for this event yet.</td></tr>
-        <?php endif; ?>
-    </tbody>
-</table>
+<!-- AUDIT TABLE -->
+<div id="auditTableContainer" style="background:#fff; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.08); overflow-x:auto;">
+    <?php if (empty($auditRows)): ?>
+        <div style="padding:40px; text-align:center; color:#64748b;">
+            <p style="font-size:1.1em; margin-bottom:4px;">📭 No audit records found for <?= htmlspecialchars($currentEventName) ?>.</p>
+            <small>Actions taken on squares, payments, or game settings will log here automatically.</small>
+        </div>
+    <?php else: ?>
+        <table style="width:100%; border-collapse:collapse; text-align:left; font-size:0.88em;">
+            <thead>
+                <tr style="background:#f8fafc; border-bottom:1.5px solid #e2e8f0; color:#475569;">
+                    <th style="padding:12px 14px;">Time</th>
+                    <th style="padding:12px 14px;">Event</th>
+                    <th style="padding:12px 14px;">Action</th>
+                    <th style="padding:12px 14px;">Cell / Target</th>
+                    <th style="padding:12px 14px;">Buyer / Ref</th>
+                    <th style="padding:12px 14px;">Amount</th>
+                    <th style="padding:12px 14px;">Details / Notes</th>
+                    <th style="padding:12px 14px;">By</th>
+                </tr>
+            </thead>
+            <tbody id="auditTableBody">
+                <?php foreach ($auditRows as $row): 
+                    $action = $row['action'] ?? '';
+                    $cat = 'settings';
+                    if (strpos($action, 'cell_') !== false || strpos($action, 'attendee') !== false) {
+                        $cat = 'squares';
+                    } elseif (strpos($action, 'paid') !== false || strpos($action, 'order_') !== false) {
+                        $cat = 'payments';
+                    } elseif (strpos($action, 'prize') !== false) {
+                        $cat = 'prizes';
+                    } elseif (strpos($action, 'webhook') !== false) {
+                        $cat = 'webhooks';
+                    }
+                    $badgeColor = '#e2e8f0; color:#334155;';
+                    if ($cat === 'squares') $badgeColor = '#dbeafe; color:#1e40af;';
+                    if ($cat === 'payments') $badgeColor = '#dcfce7; color:#15803d;';
+                    if ($cat === 'prizes') $badgeColor = '#fef3c7; color:#92400e;';
+                    if ($cat === 'settings') $badgeColor = '#f3e8ff; color:#6b21a8;';
+                    if ($cat === 'webhooks') $badgeColor = '#ffedd5; color:#9a3412;';
+                ?>
+                <tr class="audit-row" data-cat="<?= $cat ?>" style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:10px 14px; color:#64748b; white-space:nowrap;">
+                        <?= !empty($row['created_at']) ? date('M d, g:ia', strtotime($row['created_at'])) : '-' ?>
+                    </td>
+                    <td style="padding:10px 14px; font-weight:600; color:#1e293b;">
+                        <?= htmlspecialchars($row['event_name'] ?? ('Event #' . ($row['event_id'] ?? ''))) ?>
+                    </td>
+                    <td style="padding:10px 14px;">
+                        <span style="display:inline-block; font-size:0.8em; font-weight:bold; padding:2px 8px; border-radius:10px; background:<?= $badgeColor ?>">
+                            <?= htmlspecialchars(str_replace('_', ' ', $action)) ?>
+                        </span>
+                    </td>
+                    <td style="padding:10px 14px; font-weight:bold; color:#0f172a;">
+                        <?= htmlspecialchars($row['cell_reference'] ?? '-') ?>
+                    </td>
+                    <td style="padding:10px 14px; color:#334155;">
+                        <?= htmlspecialchars($row['buyer_name'] ?? ($row['order_id'] ?? '-')) ?>
+                    </td>
+                    <td style="padding:10px 14px; font-weight:600; color:#059669;">
+                        <?= ($row['amount'] !== null && (float)$row['amount'] > 0) ? ('$' . number_format((float)$row['amount'], 2)) : '-' ?>
+                    </td>
+                    <td style="padding:10px 14px; color:#475569;">
+                        <?= htmlspecialchars($row['details'] ?? '') ?>
+                    </td>
+                    <td style="padding:10px 14px; color:#64748b; font-size:0.9em;">
+                        👤 <?= htmlspecialchars($row['performed_by'] ?? 'System') ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
+</div>
+
+<!-- WEBHOOKS TABLE -->
+<div id="webhooksTableContainer" style="display:none; background:#fff; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.08); overflow-x:auto;">
+    <div style="padding:16px 20px; background:#fff7ed; border-bottom:1px solid #ffedd5;">
+        <strong style="color:#9a3412;">🔗 Hi.Events Inbound Webhook Activity</strong>
+        <p style="margin:2px 0 0; font-size:0.85em; color:#7c2d12;">
+            <?php if ($selectedEventId > 0 && !empty($currentHiEventsId)):
+                echo "Filtered strictly for <strong>" . htmlspecialchars($currentEventName) . "</strong> (Hi.Events ID: " . htmlspecialchars($currentHiEventsId) . ")";
+            elseif ($selectedEventId > 0 && empty($currentHiEventsId)):
+                echo "ℹ️ <strong>" . htmlspecialchars($currentEventName) . "</strong> is an Offline / Standalone event with no linked Hi.Events ID.";
+            else:
+                echo "Showing webhooks across all events.";
+            endif; ?>
+        </p>
+    </div>
+    <?php if (empty($webhookRows)): ?>
+        <div style="padding:36px; text-align:center; color:#64748b;">
+            <p>No webhooks recorded yet for this event.</p>
+        </div>
+    <?php else: ?>
+        <table style="width:100%; border-collapse:collapse; text-align:left; font-size:0.88em;">
+            <thead>
+                <tr style="background:#f8fafc; border-bottom:1.5px solid #e2e8f0; color:#475569;">
+                    <th style="padding:12px 14px;">Received</th>
+                    <th style="padding:12px 14px;">Hi.Events ID</th>
+                    <th style="padding:12px 14px;">Event Type</th>
+                    <th style="padding:12px 14px;">IP Address</th>
+                    <th style="padding:12px 14px;">Payload Preview</th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php foreach ($webhookRows as $w): ?>
+                <tr style="border-bottom:1px solid #f1f5f9;">
+                    <td style="padding:10px 14px; color:#64748b; white-space:nowrap;">
+                        <?= !empty($w['created_at']) ? date('M d, g:ia', strtotime($w['created_at'])) : '-' ?>
+                    </td>
+                    <td style="padding:10px 14px; font-weight:bold;">
+                        <?= htmlspecialchars($w['hievents_event_id'] ?? '-') ?>
+                    </td>
+                    <td style="padding:10px 14px;">
+                        <span style="display:inline-block; font-size:0.8em; font-weight:bold; padding:2px 8px; border-radius:10px; background:#ffedd5; color:#9a3412;">
+                            <?= htmlspecialchars($w['event_type'] ?? 'unknown') ?>
+                        </span>
+                    </td>
+                    <td style="padding:10px 14px; color:#64748b; font-family:monospace;">
+                        <?= htmlspecialchars($w['ip_address'] ?? '-') ?>
+                    </td>
+                    <td style="padding:10px 14px; color:#475569; font-family:monospace; font-size:0.8em;">
+                        <?= htmlspecialchars(mb_strimwidth($w['payload'] ?? '', 0, 95, '...')) ?>
+                    </td>
+                </tr>
+                <?php endforeach; ?>
+            </tbody>
+        </table>
+    <?php endif; ?>
+</div>
 
 <script>
-function filterAudit(cat) {
-    const rows = document.querySelectorAll('#auditTable tbody tr[data-cat]');
+function setAuditCategory(cat, btn) {
+    document.querySelectorAll('.audit-pill').forEach(el => {
+        el.style.background = '#fff';
+        el.style.color = '#334155';
+        el.style.borderColor = '#cbd5e1';
+        el.classList.remove('active');
+    });
+    btn.style.background = '#2d5016';
+    btn.style.color = '#fff';
+    btn.style.borderColor = '#2d5016';
+    btn.classList.add('active');
+
+    const auditContainer = document.getElementById('auditTableContainer');
+    const webhookContainer = document.getElementById('webhooksTableContainer');
+
+    if (cat === 'webhooks') {
+        if (auditContainer) auditContainer.style.display = 'none';
+        if (webhookContainer) webhookContainer.style.display = 'block';
+        return;
+    } else {
+        if (auditContainer) auditContainer.style.display = 'block';
+        if (webhookContainer) webhookContainer.style.display = 'none';
+    }
+
+    const rows = document.querySelectorAll('.audit-row');
     rows.forEach(r => {
-        if (cat === 'all' || r.getAttribute('data-cat') === cat) {
+        if (cat === 'all' || r.dataset.cat === cat) {
             r.style.display = '';
         } else {
             r.style.display = 'none';
@@ -95,26 +270,3 @@ function filterAudit(cat) {
     });
 }
 </script>
-
-<?php if ($isSuperAdmin): ?>
-<details style="margin-top:35px; background:white; padding:15px; border-radius:8px; border:1px solid #ddd;">
-    <summary style="font-weight:bold; cursor:pointer; color:#2d5016;">📜 Raw Webhook Debug Logs (Hi.Events Incoming Payloads)</summary>
-    <table style="margin-top:15px;">
-        <thead><tr><th>ID</th><th>Event ID</th><th>Type</th><th>Processed</th><th>Error</th><th>Time</th><th>Payload</th></tr></thead>
-        <tbody>
-            <?php foreach ($logs as $l): ?>
-            <tr>
-                <td><?= $l['id'] ?></td>
-                <td><?= htmlspecialchars($l['hievents_event_id'] ?? '-') ?></td>
-                <td><?= htmlspecialchars($l['event_type']) ?></td>
-                <td><?= $l['processed'] ? '✅' : '⏳' ?></td>
-                <td><?= htmlspecialchars($l['error_message'] ?? '') ?></td>
-                <td><?= $l['created_at'] ?></td>
-                <td><pre><?= htmlspecialchars(substr($l['payload'], 0, 200)) ?></pre></td>
-            </tr>
-            <?php endforeach; ?>
-            <?php if (empty($logs)): ?><tr><td colspan="7" style="text-align:center;color:#999;">No webhooks received yet</td></tr><?php endif; ?>
-        </tbody>
-    </table>
-</details>
-<?php endif; ?>

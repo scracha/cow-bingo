@@ -1,11 +1,11 @@
--- Cow Bingo Database Schema (Multi-Event)
+-- Cow Pat Bingo Database Schema (Multi-Event)
 -- Run this on your PHP server's MariaDB instance
 
 CREATE DATABASE IF NOT EXISTS cow_bingo CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 USE cow_bingo;
 
--- Events table: one row per cow bingo game
+-- Events table: one row per cow pat bingo game
 CREATE TABLE IF NOT EXISTS cow_bingo_events (
     id INT AUTO_INCREMENT PRIMARY KEY,
     hievents_event_id VARCHAR(100) UNIQUE DEFAULT NULL,  -- NULL = standalone / offline game
@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS cow_bingo_events (
     event_slug VARCHAR(255) DEFAULT NULL,             -- slug for public URL
     event_start DATETIME DEFAULT NULL,               -- event start date/time
     event_venue VARCHAR(255) DEFAULT NULL,            -- venue name
+    event_description TEXT DEFAULT NULL,              -- location, maps, bank payment details
     grid_cols INT NOT NULL DEFAULT 16,
     grid_rows INT NOT NULL DEFAULT 16,
     pricing_tiers TEXT DEFAULT NULL,                  -- JSON string of {qty: price} tiers
@@ -93,12 +94,15 @@ CREATE TABLE IF NOT EXISTS cow_bingo_audit_log (
 ) ENGINE=InnoDB;
 
 -- Log table to capture raw webhook payloads for debugging
+
 CREATE TABLE IF NOT EXISTS webhook_log (
     id INT AUTO_INCREMENT PRIMARY KEY,
     hievents_event_id VARCHAR(100) DEFAULT NULL,
     payload TEXT NOT NULL,
+    ip_address VARCHAR(45) DEFAULT NULL,       -- NEW
     event_type VARCHAR(100) DEFAULT NULL,
     processed TINYINT(1) DEFAULT 0,
     error_message TEXT DEFAULT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_webhook_ip_time (ip_address, created_at)   -- NEW
 ) ENGINE=InnoDB;

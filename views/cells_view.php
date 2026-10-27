@@ -7,6 +7,7 @@ if (!$viewEvent) {
 
 $gridCols = (int) $viewEvent['grid_cols'];
 $gridRows = (int) $viewEvent['grid_rows'];
+$cellNaming = $viewEvent['cell_naming'] ?? 'alpha';
 $colLetters = array_slice(range('A', 'Z'), 0, $gridCols);
 $soldCells = array_column($cells, 'buyer_name', 'cell_reference');
 
@@ -24,7 +25,7 @@ $sortBy = $_GET['sort'] ?? 'cell';
     <input type="hidden" name="tab" value="cells">
     <input type="hidden" name="event_db_id" value="<?= $viewEventId ?>">
     <strong>🏆 Assign Prize:</strong>
-    <input type="text" name="cell_reference" required placeholder="Cell (e.g. C13)" style="padding:6px;width:100px;text-transform:uppercase;">
+    <input type="text" name="cell_reference" required placeholder="<?= $cellNaming === 'numeric' ? 'Square # (e.g. 16 or D2)' : 'Cell (e.g. D2 or 16)' ?>" style="padding:6px;width:140px;text-transform:uppercase;">
     <input type="text" name="prize" required placeholder="Prize (e.g. 1st Prize, Cake)" style="padding:6px;width:250px;">
     <button type="submit" class="primary">Assign Prize</button>
 </form>
@@ -51,10 +52,10 @@ $sortBy = $_GET['sort'] ?? 'cell';
 
             <div style="margin-left:auto; display:flex; gap:6px; align-items:center;">
                 <span style="font-size:0.85em; color:#666; font-weight:bold;">Quick:</span>
-                <button type="button" class="btn" style="background:#4a7c23; padding:5px 10px; font-size:0.8em;" onclick="adminAddRandom(1)">+1 Random</button>
-                <button type="button" class="btn" style="background:#4a7c23; padding:5px 10px; font-size:0.8em;" onclick="adminAddRandom(3)">+3 Random</button>
-                <button type="button" class="btn" style="background:#4a7c23; padding:5px 10px; font-size:0.8em;" onclick="adminAddRandom(5)">+5 Random</button>
-                <button type="button" class="btn" style="background:#6c757d; padding:5px 10px; font-size:0.8em;" onclick="adminClearSelection()">Clear</button>
+                <button type="button" class="btn" style="background:#4a7c23; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminAddRandom(1)">+1 Random</button>
+                <button type="button" class="btn" style="background:#4a7c23; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminAddRandom(3)">+3 Random</button>
+                <button type="button" class="btn" style="background:#4a7c23; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminAddRandom(5)">+5 Random</button>
+                <button type="button" class="btn" style="background:#6c757d; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminClearSelection()">Clear</button>
             </div>
         </div>
 
@@ -69,13 +70,15 @@ $sortBy = $_GET['sort'] ?? 'cell';
                     <div style="color:#666; font-weight:bold; display:flex; align-items:center; justify-content:center;"><?= $r ?></div>
                     <?php foreach ($colLetters as $c): 
                         $ref = $c . $r;
+                        $displayRef = formatCellRef($ref, $gridCols, $cellNaming);
                         $isSold = isset($soldCells[$ref]);
                     ?>
                         <div class="admin-grid-cell <?= $isSold ? 'sold' : 'available' ?>" 
                              data-cell="<?= $ref ?>" 
-                             title="<?= $isSold ? ('Sold to ' . htmlspecialchars($soldCells[$ref])) : ('Available: ' . $ref) ?>"
+                             data-display="<?= $displayRef ?>"
+                             title="<?= $isSold ? ('Sold to ' . htmlspecialchars($soldCells[$ref]) . ' [' . $displayRef . ']') : ('Available: ' . $displayRef . ($cellNaming === 'numeric' ? ' (' . $ref . ')' : '')) ?>"
                              onclick="adminToggleCell(this)">
-                            <?= $ref ?>
+                            <?= $displayRef ?>
                         </div>
                     <?php endforeach; ?>
                 <?php endfor; ?>
@@ -116,6 +119,8 @@ $sortBy = $_GET['sort'] ?? 'cell';
 
 <script>
 let adminSelected = new Set();
+const adminCellNaming = '<?= $cellNaming ?>';
+const adminGridCols = <?= $gridCols ?>;
 
 function adminToggleCell(el) {
     if (el.classList.contains('sold')) return;
@@ -150,6 +155,15 @@ function adminClearSelection() {
     adminUpdateSelectionUI();
 }
 
+function adminFormatDisplay(ref) {
+    if (adminCellNaming !== 'numeric') return ref;
+    const m = ref.match(/^([A-Z])([0-9]+)$/);
+    if (!m) return ref;
+    const col = m[1].charCodeAt(0) - 64;
+    const row = parseInt(m[2], 10);
+    return ((row - 1) * adminGridCols) + col;
+}
+
 function adminUpdateSelectionUI() {
     const count = adminSelected.size;
     const input = document.getElementById('adminSelectedCellsInput');
@@ -159,7 +173,8 @@ function adminUpdateSelectionUI() {
     input.value = Array.from(adminSelected).join(',');
 
     if (count > 0) {
-        summary.innerHTML = `Selected <strong>${count}</strong> square${count > 1 ? 's' : ''}: <span style="color:#2d5016;">${Array.from(adminSelected).join(', ')}</span>`;
+        const displayList = Array.from(adminSelected).map(adminFormatDisplay);
+        summary.innerHTML = `Selected <strong>${count}</strong> square${count > 1 ? 's' : ''}: <span style="color:#2d5016;">${displayList.join(', ')}</span>`;
         btn.textContent = `Assign ${count} Square${count > 1 ? 's' : ''}`;
         btn.disabled = false;
     } else {
@@ -183,13 +198,18 @@ if (empty($pricingMap)) {
     $pricingMap = defined('DEFAULT_PRICING_TIERS') ? DEFAULT_PRICING_TIERS : [1 => 10.00, 3 => 25.00, 5 => 40.00, 10 => 70.00];
 }
 
-// Ensure historical records have pricing information populated
 backfillMissingCellPrices($db, $viewEventId, $pricingMap);
 
 $reconData = calculateEventCashReconciliation($db, $viewEventId, $pricingMap);
 $summaryChannels = $reconData['summary'];
 $buyerBatches = $reconData['buyer_batches'];
 $totals = $reconData['totals'];
+
+$batchCounts = [];
+foreach ($cells as $c) {
+    $bRef = $c['order_id'] ?: $c['ticket_id'];
+    $batchCounts[$bRef] = ($batchCounts[$bRef] ?? 0) + 1;
+}
 
 $cntStmt = $db->prepare("SELECT COUNT(*) FROM cow_bingo_cells WHERE event_id = ? AND buyer_email IS NOT NULL AND buyer_email != ''");
 $cntStmt->execute([$viewEventId]);
@@ -198,7 +218,6 @@ $contactsCount = (int) $cntStmt->fetchColumn();
 
 <!-- KPI CARDS SUMMARY FOR TREASURER -->
 <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:20px;">
-    <!-- CASH IN ENVELOPES -->
     <div style="background:#fff; border-radius:8px; border:1.5px solid #28a745; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
         <div style="font-size:0.8em; font-weight:bold; color:#155724; text-transform:uppercase;">💵 Physical Cash in Envelopes</div>
         <div style="font-size:1.6em; font-weight:900; color:#155724; margin:4px 0;">$<?= number_format($totals['cash_paid'], 2) ?></div>
@@ -207,7 +226,6 @@ $contactsCount = (int) $cntStmt->fetchColumn();
         </div>
     </div>
 
-    <!-- ONLINE HI.EVENTS / STRIPE -->
     <div style="background:#fff; border-radius:8px; border:1.5px solid #0284c7; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
         <div style="font-size:0.8em; font-weight:bold; color:#0369a1; text-transform:uppercase;">💳 Online hi.events / Card</div>
         <div style="font-size:1.6em; font-weight:900; color:#0369a1; margin:4px 0;">$<?= number_format($totals['online_paid'], 2) ?></div>
@@ -216,7 +234,6 @@ $contactsCount = (int) $cntStmt->fetchColumn();
         </div>
     </div>
 
-    <!-- TOTAL GROSS SALES -->
     <div style="background:#fff; border-radius:8px; border:1.5px solid #2d5016; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
         <div style="font-size:0.8em; font-weight:bold; color:#2d5016; text-transform:uppercase;">🏆 Total Revenue Collected</div>
         <div style="font-size:1.6em; font-weight:900; color:#2d5016; margin:4px 0;">$<?= number_format($totals['total_paid'], 2) ?></div>
@@ -225,7 +242,6 @@ $contactsCount = (int) $cntStmt->fetchColumn();
         </div>
     </div>
 
-    <!-- MULTI-TICKET DISCOUNTS SAVED -->
     <div style="background:#fff; border-radius:8px; border:1.5px solid #d97706; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
         <div style="font-size:0.8em; font-weight:bold; color:#b45309; text-transform:uppercase;">🏷️ Multi-Ticket Discounts</div>
         <div style="font-size:1.6em; font-weight:900; color:#b45309; margin:4px 0;">-$<?= number_format($totals['total_discount'], 2) ?></div>
@@ -319,7 +335,7 @@ $contactsCount = (int) $cntStmt->fetchColumn();
 <table>
     <thead>
         <tr>
-            <th><a href="?tab=table&view=<?= $viewEventId ?>&sort=cell" style="color:white;text-decoration:none;">Cell <?= $sortBy === 'cell' ? '▼' : '' ?></a></th>
+            <th><a href="?tab=table&view=<?= $viewEventId ?>&sort=cell" style="color:white;text-decoration:none;"><?= $cellNaming === 'numeric' ? 'Square #' : 'Cell' ?> <?= $sortBy === 'cell' ? '▼' : '' ?></a></th>
             <th>Ticket ID</th>
             <th>Order / Batch</th>
             <th><a href="?tab=table&view=<?= $viewEventId ?>&sort=buyer" style="color:white;text-decoration:underline;">Buyer <?= $sortBy === 'buyer' ? '▼' : '' ?></a></th>
@@ -334,14 +350,29 @@ $contactsCount = (int) $cntStmt->fetchColumn();
         </tr>
     </thead>
     <tbody>
-        <?php foreach ($cells as $cell): 
+        <?php 
+        $seenBatchesInTable = [];
+        foreach ($cells as $cell): 
             $bRef = $cell['order_id'] ?: $cell['ticket_id'];
+            $batchQty = $batchCounts[$bRef] ?? 1;
             $isPaid = !empty($cell['is_paid']);
-            $expected = $cell['order_amount'] !== null ? (float)$cell['order_amount'] : 10.00;
-            $paid = $isPaid ? ($cell['price_paid'] !== null ? (float)$cell['price_paid'] : $expected) : 0.00;
+            $isFirstInBatch = !isset($seenBatchesInTable[$bRef]);
+            $seenBatchesInTable[$bRef] = true;
+
+            $expectedBatch = calculateBatchPrice($batchQty, $pricingMap);
+            $actualPaidBatch = $isPaid 
+                ? (($cell['order_amount'] !== null && (float)$cell['order_amount'] > 0) ? (float)$cell['order_amount'] : $expectedBatch) 
+                : 0.00;
+            $unitShare = round(($isPaid ? $actualPaidBatch : $expectedBatch) / max(1, $batchQty), 2);
+            $cellDisplay = formatCellRef($cell['cell_reference'], $gridCols, $cellNaming);
         ?>
         <tr<?= $cell['prize'] ? ' style="background:#fff8e1;"' : '' ?>>
-            <td><strong><?= htmlspecialchars($cell['cell_reference']) ?></strong></td>
+            <td>
+                <strong><?= htmlspecialchars($cellDisplay) ?></strong>
+                <?php if ($cellNaming === 'numeric'): ?>
+                    <small style="color:#6b7280; display:block;">(<?= htmlspecialchars($cell['cell_reference']) ?>)</small>
+                <?php endif; ?>
+            </td>
             <td><?= htmlspecialchars($cell['ticket_id']) ?></td>
             <td><code style="font-size:0.85em;"><?= htmlspecialchars($bRef) ?></code></td>
             <td><?= htmlspecialchars($cell['buyer_name']) ?></td>
@@ -352,10 +383,24 @@ $contactsCount = (int) $cntStmt->fetchColumn();
                 </span>
             </td>
             <td>
-                <strong>$<?= number_format($expected, 2) ?></strong>
+                <?php if ($isFirstInBatch): ?>
+                    <strong>$<?= number_format($expectedBatch, 2) ?></strong>
+                    <?php if ($batchQty > 1): ?>
+                        <small style="display:block;color:#666;">(Batch of <?= $batchQty ?>)</small>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <span style="color:#9ca3af; font-size:0.85em;" title="Included in batch total above">—</span>
+                <?php endif; ?>
             </td>
             <td>
-                <strong style="color:<?= $isPaid ? '#15803d' : '#dc3545' ?>;">$<?= number_format($paid, 2) ?></strong>
+                <?php if ($isFirstInBatch): ?>
+                    <strong style="color:<?= $isPaid ? '#15803d' : '#dc3545' ?>;">$<?= number_format($actualPaidBatch, 2) ?></strong>
+                    <?php if ($batchQty > 1): ?>
+                        <small style="display:block;color:#666;">($<?= number_format($unitShare, 2) ?>/sq)</small>
+                    <?php endif; ?>
+                <?php else: ?>
+                    <span style="color:#9ca3af; font-size:0.85em;" title="Included in batch total above">—</span>
+                <?php endif; ?>
             </td>
             <td>
                 <?= $isPaid 
@@ -383,8 +428,12 @@ $contactsCount = (int) $cntStmt->fetchColumn();
                 </form>
                 <?php endif; ?>
 
-                <!-- Always available Remove button -->
-                <form method="POST" action="?tab=table&view=<?= $viewEventId ?>&sort=<?= urlencode($sortBy) ?>" class="inline" style="margin-right:3px;" onsubmit="return confirm('Remove assignment?')">
+                <?php 
+                $removeMsg = $isPaid 
+                    ? "⚠️ CAUTION: " . htmlspecialchars(addslashes($cell['buyer_name'])) . " has ALREADY PAID for square " . $cellDisplay . " (Ticket: " . htmlspecialchars($cell['ticket_id']) . ")!\n\nAre you sure you want to permanently delete this paid booking and free up the square in the paddock?"
+                    : "Remove unpaid assignment for " . htmlspecialchars(addslashes($cell['buyer_name'])) . " (" . $cellDisplay . ")?";
+                ?>
+                <form method="POST" action="?tab=table&view=<?= $viewEventId ?>&sort=<?= urlencode($sortBy) ?>" class="inline" style="margin-right:3px;" onsubmit="return confirm('<?= $removeMsg ?>')">
                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                     <input type="hidden" name="action" value="delete_cell">
                     <input type="hidden" name="tab" value="table">

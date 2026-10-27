@@ -1,13 +1,76 @@
 <?php
 // views/grid_view.php
+
+if (!function_exists('makeClickableLinks')) {
+    function makeClickableLinks(string $html): string {
+        return preg_replace(
+            '/(https?:\/\/[^\s<]+)/i',
+            '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>',
+            $html
+        );
+    }
+}
+
+if (!function_exists('formatCellRef')) {
+    function formatCellRef(string $ref, int $gridCols = 16, string $mode = 'alpha'): string {
+        if ($mode !== 'numeric') {
+            return strtoupper($ref);
+        }
+        if (preg_match('/^([A-Z]+)(\d+)$/i', $ref, $m)) {
+            $colLetters = strtoupper($m[1]);
+            $row = (int)$m[2];
+            $col = 0;
+            for ($i = 0; $i < strlen($colLetters); $i++) {
+                $col = $col * 26 + (ord($colLetters[$i]) - 64);
+            }
+            return (string)(($row - 1) * $gridCols + $col);
+        }
+        return $ref;
+    }
+}
+
+$event = $event ?? [];
+$eventName = $event['event_name'] ?? 'Cow Pat Bingo';
+$gridCols = max(2, (int)($event['grid_cols'] ?? 16));
+$gridRows = max(2, (int)($event['grid_rows'] ?? 16));
+$totalCells = $gridCols * $gridRows;
+$cellNaming = $event['cell_naming'] ?? 'alpha';
+$eventDesc = $event['event_description'] ?? '';
+$eventVenue = $event['event_venue'] ?? '';
+$eventStart = $event['event_start'] ?? null;
+$startDisplay = !empty($eventStart) ? date('D, d M Y, g:ia', strtotime($eventStart)) : '';
+$isActive = !empty($event['is_active']);
+$isAdmin = !empty($_SESSION['admin_id']);
+
+// Generate column letters (A, B, C...)
+if (empty($cols) || !is_array($cols)) {
+    $cols = [];
+    for ($c = 1; $c <= $gridCols; $c++) {
+        $letters = '';
+        $temp = $c;
+        while ($temp > 0) {
+            $rem = ($temp - 1) % 26;
+            $letters = chr(65 + $rem) . $letters;
+            $temp = (int)(($temp - $rem - 1) / 26);
+        }
+        $cols[] = $letters;
+    }
+}
+
+$bookings = $bookings ?? [];
+$soldCount = count($bookings);
+$availableCount = max(0, $totalCells - $soldCount);
 $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
+
+$hasHiEvents = !empty($event['hievents_event_id']);
+$buyTicketsUrl = $buyTicketsUrl ?? '';
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <title><?= htmlspecialchars($eventName) ?> - Cow Bingo</title>
+    <title><?= htmlspecialchars($eventName) ?> - Cow Pat Bingo</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -21,6 +84,19 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         header { text-align: center; margin-bottom: 20px; color: white; }
         header h1 { font-size: 2.2em; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); margin-bottom: 5px; }
         header p { font-size: 1.1em; opacity: 0.9; }
+
+        .event-details-card {
+            background: rgba(255,255,255,0.96);
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            line-height: 1.6;
+            font-size: 0.95em;
+            color: #2b3a1a;
+        }
+        .event-details-card a { color: #15803d; font-weight: bold; text-decoration: underline; }
+
         .stats { display: flex; justify-content: center; gap: 30px; margin-bottom: 20px; flex-wrap: wrap; }
         .stat-box {
             background: rgba(255,255,255,0.95); border-radius: 8px;
@@ -174,11 +250,6 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
             box-shadow: 0 0 12px rgba(255, 215, 0, 0.8) !important;
             transform: scale(1.15);
             z-index: 20;
-            animation: pulse-highlight 1.5s ease-in-out infinite;
-        }
-        @keyframes pulse-highlight {
-            0%, 100% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.8); }
-            50% { box-shadow: 0 0 20px rgba(255, 215, 0, 1); }
         }
         .cell.dimmed { opacity: 0.3; }
 
@@ -204,19 +275,18 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         .winner-prize { font-weight: bold; color: #333; font-size: 1em; }
         .winner-name { color: #666; font-size: 0.9em; }
 
-        /* PRINT STYLES FOR PADDOCK JUDGES */
+        /* PRINT STYLES FOR OFFICIAL PADDOCK JUDGES */
         .print-only { display: none; }
         @media print {
             body { background: white !important; color: black !important; padding: 0 !important; }
             .container { max-width: 100% !important; margin: 0 !important; width: 100% !important; }
-            header, .stats, .search-bar, .tooltip, .buy-link, .no-print { display: none !important; }
+            header, .stats, .search-bar, .tooltip, .buy-link, .no-print, .event-details-card { display: none !important; }
             .grid-wrapper { box-shadow: none !important; padding: 0 !important; border: none !important; }
             .cell {
                 border: 1px solid #222 !important;
                 background: transparent !important;
                 color: #000 !important;
                 box-shadow: none !important;
-                animation: none !important;
             }
             .cell.taken { background: #e5e5e5 !important; font-size: 9px !important; }
             .cell.winner { font-weight: 900 !important; text-decoration: underline !important; }
@@ -238,8 +308,8 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
     </div>
 
     <header>
-        <h1><?= htmlspecialchars(SITE_TITLE) ?></h1>
-        <p><?= htmlspecialchars($eventName) ?></p>
+        <h1><?= htmlspecialchars(defined('SITE_TITLE') ? SITE_TITLE : '🐄 Cow Pat Bingo 🐄') ?></h1>
+        <p style="font-size:1.3em; font-weight:bold; margin-top:4px;"><?= htmlspecialchars($eventName) ?></p>
         <?php if ($startDisplay || $eventVenue): ?>
             <p style="margin-top:5px; font-size:0.95em; opacity:0.9;">
                 <?php if ($startDisplay): ?>📅 <?= htmlspecialchars($startDisplay) ?><?php endif; ?>
@@ -247,28 +317,39 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
                 <?php if ($eventVenue): ?>📍 <?= htmlspecialchars($eventVenue) ?><?php endif; ?>
             </p>
         <?php endif; ?>
+        <?php if (!$isActive): ?>
+            <div class="no-print" style="display:inline-block; margin-top:8px; background:#fef3c7; color:#92400e; padding:4px 12px; border-radius:12px; font-weight:bold; font-size:0.85em;">
+                🏁 Event Concluded / Inactive
+            </div>
+        <?php endif; ?>
     </header>
+
+    <?php if (!empty($eventDesc)): ?>
+    <div class="event-details-card no-print">
+        <strong>📍 Event Info &amp; Instructions:</strong><br>
+        <?= makeClickableLinks(nl2br(htmlspecialchars($eventDesc))) ?>
+    </div>
+    <?php endif; ?>
+
     <div class="stats no-print">
         <div class="stat-box"><div class="number"><?= $soldCount ?></div><div class="label">Sold</div></div>
         <div class="stat-box"><div class="number"><?= $availableCount ?></div><div class="label">Available</div></div>
-        <?php if ($hasHiEvents && $buyTicketsUrl): ?>
+        <?php if ($hasHiEvents && $buyTicketsUrl && $isActive): ?>
             <a href="<?= htmlspecialchars($buyTicketsUrl) ?>" target="_blank" class="stat-box buy-link">
                 <div class="number">🎟️</div><div class="label">Buy More Tickets</div>
             </a>
         <?php endif; ?>
     </div>
 
-    <!-- Find My Cells search -->
     <div class="search-bar no-print">
-        <input type="text" id="searchInput" placeholder="🔍 Find my cells (enter your name or ticket ID)..." />
+        <input type="text" id="searchInput" placeholder="🔍 Find my cells (enter your name, ticket ID, or square <?= $cellNaming === 'numeric' ? '# 16' : 'D2' ?>)..." />
         <button id="searchBtn" onclick="findCells()">Find</button>
         <button id="clearBtn" onclick="clearSearch()" style="display:none;">Clear</button>
         <span id="searchResult"></span>
     </div>
 
-    <!-- PRINT ONLY TITLE -->
     <div class="print-only" style="margin-bottom:12px;">
-        <h2 style="margin:0;">🐄 <?= htmlspecialchars($eventName) ?> - Field Grid</h2>
+        <h2 style="margin:0;">🐮 <?= htmlspecialchars($eventName) ?> - Field Grid</h2>
         <small>Generated: <?= date('d M Y, g:ia') ?> &bull; Sold: <?= $soldCount ?> / <?= $totalCells ?> squares</small>
     </div>
 
@@ -284,6 +365,8 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
                 <div class="row-label"><?= $row ?></div>
                 <?php foreach ($cols as $col): 
                     $cellRef = $col . $row;
+                    $displayRef = formatCellRef($cellRef, $gridCols, $cellNaming);
+                    $numericRef = formatCellRef($cellRef, $gridCols, 'numeric');
                     $isTaken = isset($bookings[$cellRef]);
                     $isWinner = $isTaken && !empty($bookings[$cellRef]['prize']);
                     $dataAttrs = '';
@@ -295,21 +378,25 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
                         if ($isAdmin && empty($b['is_paid'])) $classes .= ' admin-unpaid';
 
                         $dataAttrs = sprintf(
-                            'data-cell="%s" data-name="%s" data-ticket="%s" data-prize="%s" data-paid="%s"',
+                            'data-cell="%s" data-display="%s" data-numeric="%s" data-name="%s" data-ticket="%s" data-prize="%s" data-paid="%s"',
                             htmlspecialchars($cellRef),
+                            htmlspecialchars($displayRef),
+                            htmlspecialchars($numericRef),
                             htmlspecialchars($b['buyer_name']),
                             htmlspecialchars($b['ticket_id']),
                             htmlspecialchars($b['prize'] ?? ''),
                             !empty($b['is_paid']) ? '1' : '0'
                         );
+                    } else {
+                        $dataAttrs = sprintf('data-cell="%s" data-display="%s" data-numeric="%s"', htmlspecialchars($cellRef), htmlspecialchars($displayRef), htmlspecialchars($numericRef));
                     }
                 ?>
                     <div class="<?= $classes ?>" <?= $dataAttrs ?>>
                         <?php if ($isWinner): ?>
-                            <span class="winner-ref"><?= $cellRef ?></span>
-                            <img src="cow_poo_2.svg" class="poo-icon" alt="Winner <?= $cellRef ?>">
+                            <span class="winner-ref"><?= $displayRef ?></span>
+                            <img src="cow_poo_2.svg" class="poo-icon" alt="Winner <?= $displayRef ?>">
                         <?php else: ?>
-                            <?= $cellRef ?>
+                            <?= $displayRef ?>
                         <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
@@ -326,9 +413,8 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         </div>
     </div>
 
-    <!-- PRINT ONLY JUDGES SIGN-OFF -->
     <div class="print-only print-judges-box">
-        <h3 style="margin-top:0; border-bottom:1px solid #000; padding-bottom:4px;">🐄 Official Paddock Judges Sign-Off</h3>
+        <h3 style="margin-top:0; border-bottom:1px solid #000; padding-bottom:4px;">🐮 Official Paddock Judges Sign-Off</h3>
         <table style="width:100%; border:none; margin-top:10px; font-size:12px;">
             <tr>
                 <td style="width:50%; padding:8px 0;"><strong>Lead Judge Signature:</strong> ____________________________________</td>
@@ -348,9 +434,11 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
     <div class="winners-summary no-print">
         <h2><img src="cow_poo_2.svg" style="width:56px;height:56px;vertical-align:middle;"> Winners</h2>
         <div class="winners-list">
-            <?php foreach ($winners as $ref => $w): ?>
+            <?php foreach ($winners as $ref => $w): 
+                $winDisplay = formatCellRef($ref, $gridCols, $cellNaming);
+            ?>
             <div class="winner-card">
-                <div class="winner-cell"><?= htmlspecialchars($ref) ?></div>
+                <div class="winner-cell"><?= htmlspecialchars($winDisplay) ?></div>
                 <div class="winner-details">
                     <div class="winner-prize"><?= htmlspecialchars($w['prize']) ?></div>
                     <div class="winner-name"><?= htmlspecialchars($w['buyer_name']) ?></div>
@@ -367,17 +455,17 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
     const tooltip = document.getElementById('tooltip');
     const allCells = document.querySelectorAll('.cell');
     const takenCells = document.querySelectorAll('.cell.taken');
+    const cellNaming = '<?= $cellNaming ?>';
 
     takenCells.forEach(cell => {
         cell.addEventListener('mouseenter', (e) => {
-            let html = `<strong>${cell.dataset.cell}</strong><br>🎟 Ticket: ${cell.dataset.ticket}<br>👤 ${cell.dataset.name}`;
-            
+            const disp = cell.dataset.display || cell.dataset.cell;
+            let html = `<strong>Square: ${disp}${cellNaming === 'numeric' ? ' (' + cell.dataset.cell + ')' : ''}</strong><br>🎟️ Ticket: ${cell.dataset.ticket}<br>👤 ${cell.dataset.name}`;
             <?php if ($isAdmin): ?>
             if (cell.dataset.paid === "0") {
                 html += `<br><span style="color:#ffc107;font-weight:bold;">⚠️ Awaiting Payment (Unpaid)</span>`;
             }
             <?php endif; ?>
-
             if (cell.dataset.prize) {
                 html += `<br><img src="cow_poo_2.svg" style="width:16px;height:16px;vertical-align:middle;display:inline;"> <strong>${cell.dataset.prize}</strong>`;
             }
@@ -400,30 +488,34 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
     function findCells() {
         const query = searchInput.value.trim().toLowerCase();
         if (!query) return;
-
         let matchCount = 0;
         allCells.forEach(cell => {
             cell.classList.remove('highlight', 'dimmed');
+            const cellDisplay = (cell.dataset.display || '').toLowerCase();
+            const cellAlpha = (cell.dataset.cell || '').toLowerCase();
+            const cellNumeric = (cell.dataset.numeric || '').toLowerCase();
+            const name = (cell.dataset.name || '').toLowerCase();
+            const ticket = (cell.dataset.ticket || '').toLowerCase();
+
+            const isMatch = (cellDisplay === query || cellAlpha === query || cellNumeric === query || name.includes(query) || ticket.includes(query));
             if (cell.classList.contains('taken')) {
-                const name = (cell.dataset.name || '').toLowerCase();
-                const ticket = (cell.dataset.ticket || '').toLowerCase();
-                if (name.includes(query) || ticket.includes(query)) {
+                if (isMatch) {
                     cell.classList.add('highlight');
                     matchCount++;
                 } else {
                     cell.classList.add('dimmed');
                 }
             } else {
-                cell.classList.add('dimmed');
+                if (cellDisplay === query || cellAlpha === query || cellNumeric === query) {
+                    cell.classList.add('highlight');
+                    matchCount++;
+                } else {
+                    cell.classList.add('dimmed');
+                }
             }
         });
-
         const resultEl = document.getElementById('searchResult');
-        if (matchCount > 0) {
-            resultEl.innerHTML = `✅ Found <strong>${matchCount}</strong> cell${matchCount > 1 ? 's' : ''}`;
-        } else {
-            resultEl.innerHTML = `❌ No cells found for "${searchInput.value.trim()}"`;
-        }
+        resultEl.innerHTML = matchCount > 0 ? `✅ Found <strong>${matchCount}</strong> cell${matchCount > 1 ? 's' : ''}` : `❌ No cells found for "${searchInput.value.trim()}"`;
         document.getElementById('clearBtn').style.display = 'inline-block';
     }
 
@@ -434,5 +526,14 @@ $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
         document.getElementById('clearBtn').style.display = 'none';
     }
 </script>
+
+<?php if (!empty($_GET['print'])): ?>
+<script>
+    window.addEventListener('load', () => {
+        setTimeout(() => window.print(), 250);
+    });
+</script>
+<?php endif; ?>
+
 </body>
 </html>
