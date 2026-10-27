@@ -244,6 +244,68 @@ function handleAdminActions(PDO $db, int $currentAdminId, bool $isSuperAdmin): s
             logAuditEvent($db, $eventDbId, 'event_updated', null, null, null, null, null, "Updated event details (Numbering: $cellNaming)", $adminName);
             return "✅ Event details for '<strong>" . htmlspecialchars($name) . "</strong>' updated successfully.";
 
+        case 'delete_event':
+            if (!$isSuperAdmin) {
+                return '❌ Access denied: Only Super Administrators can permanently delete events.';
+            }
+            $eventDbId = (int)($_POST['event_db_id'] ?? 0);
+            if (!$eventDbId) return '❌ Event not found.';
+
+            $stmt = $db->prepare("SELECT event_name, hievents_event_id FROM cow_bingo_events WHERE id = ?");
+            $stmt->execute([$eventDbId]);
+            $ev = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$ev) return '❌ Event not found or already deleted.';
+
+            $evName = $ev['event_name'];
+            $hiId = $ev['hievents_event_id'];
+
+            $db->beginTransaction();
+            try {
+                // 1. Delete all assigned squares
+                $db->prepare("DELETE FROM cow_bingo_cells WHERE event_id = ?")->execute([$eventDbId]);
+                // 2. Delete audit logs
+                $db->prepare("DELETE FROM cow_bingo_audit_log WHERE event_id = ?")->execute([$eventDbId]);
+                // 3. Delete admin assignments
+                $db->prepare("DELETE FROM cow_bingo_admin_events WHERE event_id = ?")->execute([$eventDbId]);
+                // 4. Delete webhooks if linked
+                if (!empty($hiId)) {
+                    $db->prepare("DELETE FROM webhook_log WHERE hievents_event_id = ?")->execute([(string)$hiId]);
+                }
+                // 5. Delete the event itself
+                $db->prepare("DELETE FROM cow_bingo_events WHERE id = ?")->execute([$eventDbId]);
+
+                $db->commit();
+
+                if (isset($_SESSION['selected_event_id']) && (int)$_SESSION['selected_event_id'] === $eventDbId) {
+                    unset($_SESSION['selected_event_id']);
+                }
+
+                return "✅ Event '<strong>" . htmlspecialchars($evName) . "</strong>' and all associated data, squares, and audit logs permanently deleted.";
+            } catch (Exception $e) {
+                $db->rollBack();
+                return "❌ Error deleting event: " . htmlspecialchars($e->getMessage());
+            }
+
+        case 'delete_all_unpaid':
+            $eventDbId = (int)($_POST['event_db_id'] ?? 0);
+            if (!$eventDbId) return '❌ Event not found.';
+
+            if (!$isSuperAdmin && !canManageEvent($db, $currentAdminId, $eventDbId)) {
+                return '❌ Access denied: You do not have permission to manage this event.';
+            }
+
+            $countStmt = $db->prepare("SELECT COUNT(*) FROM cow_bingo_cells WHERE event_id = ? AND (is_paid = 0 OR is_paid IS NULL)");
+            $countStmt->execute([$eventDbId]);
+            $unpaidCount = (int)$countStmt->fetchColumn();
+
+            if ($unpaidCount === 0) {
+                return "ℹ️ No unpaid squares found to remove for this event.";
+            }
+
+            $db->prepare("DELETE FROM cow_bingo_cells WHERE event_id = ? AND (is_paid = 0 OR is_paid IS NULL)")->execute([$eventDbId]);
+            logAuditEvent($db, $eventDbId, 'unpaid_cells_purged', null, null, null, null, null, "Bulk removed $unpaidCount unpaid square(s) from grid", $adminName);
+            return "✅ Removed $unpaidCount unpaid square" . ($unpaidCount === 1 ? '' : 's') . " from the grid. All returned to available pool.";
+
         case 'toggle_cell_naming':
             $id = (int) ($_POST['event_db_id'] ?? 0);
             if (!$id) return '❌ Event not found.';

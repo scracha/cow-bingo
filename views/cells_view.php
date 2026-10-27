@@ -1,486 +1,520 @@
 <?php
 // views/cells_view.php
+
 if (!$viewEvent) {
-    echo "<p style='color:#777;padding:20px;text-align:center;'>No event selected. Please create or select an event first.</p>";
+    echo "<p style='padding:20px; background:#fff; border-radius:8px;'>No event selected. Please create or select an event first.</p>";
     return;
 }
 
-$gridCols = (int) $viewEvent['grid_cols'];
-$gridRows = (int) $viewEvent['grid_rows'];
+$evId = (int)$viewEvent['id'];
+$canManage = $isSuperAdmin || canManageEvent($db, $currentAdminId, $evId);
+$gridCols = max(2, (int)($viewEvent['grid_cols'] ?? 16));
+$gridRows = max(2, (int)($viewEvent['grid_rows'] ?? 16));
+$totalSquares = $gridCols * $gridRows;
 $cellNaming = $viewEvent['cell_naming'] ?? 'alpha';
-$colLetters = array_slice(range('A', 'Z'), 0, $gridCols);
-$soldCells = array_column($cells, 'buyer_name', 'cell_reference');
+$pricingTiers = !empty($viewEvent['pricing_tiers']) ? (json_decode($viewEvent['pricing_tiers'], true) ?: []) : [];
 
 $showGrid = !isset($renderSection) || $renderSection === 'grid_and_prizes';
 $showTable = !isset($renderSection) || $renderSection === 'table_only';
-$csrfToken = getCsrfToken();
-$sortBy = $_GET['sort'] ?? 'cell';
+
+// Index sold cells by uppercase cell reference
+$soldMap = [];
+$soldCount = 0;
+$paidCount = 0;
+$unpaidCount = 0;
+$totalCollected = 0.0;
+$unpaidExpected = 0.0;
+
+foreach ($cells as $c) {
+    $ref = strtoupper($c['cell_reference']);
+    $soldMap[$ref] = $c;
+    $soldCount++;
+    if (!empty($c['is_paid'])) {
+        $paidCount++;
+        $totalCollected += (float)($c['price_paid'] ?? 0);
+    } else {
+        $unpaidCount++;
+        $unpaidExpected += (float)($c['order_amount'] ?? 0);
+    }
+}
+
+$availableSquares = max(0, $totalSquares - $soldCount);
+
+// Generate Column Headers (A, B, C...)
+$colLabels = [];
+for ($c = 1; $c <= $gridCols; $c++) {
+    $letters = '';
+    $tempC = $c;
+    while ($tempC > 0) {
+        $rem = ($tempC - 1) % 26;
+        $letters = chr(65 + $rem) . $letters;
+        $tempC = (int)(($tempC - $rem - 1) / 26);
+    }
+    $colLabels[] = $letters;
+}
+
+// Status filter for Table Section (All / Paid / Unpaid)
+$filterStatus = $_GET['filter_paid'] ?? 'all';
+$displayCells = array_filter($cells, function($c) use ($filterStatus) {
+    if ($filterStatus === 'paid') return !empty($c['is_paid']);
+    if ($filterStatus === 'unpaid') return empty($c['is_paid']);
+    return true;
+});
 ?>
 
 <?php if ($showGrid): ?>
-<!-- Assign Prize Form -->
-<form method="POST" action="?tab=cells&view=<?= $viewEventId ?>" style="margin-bottom:15px; padding:15px; background:#fff8e1; border:1px solid #ffe082; border-radius:6px;">
-    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-    <input type="hidden" name="action" value="assign_prize_by_ref">
-    <input type="hidden" name="tab" value="cells">
-    <input type="hidden" name="event_db_id" value="<?= $viewEventId ?>">
-    <strong>🏆 Assign Prize:</strong>
-    <input type="text" name="cell_reference" required placeholder="<?= $cellNaming === 'numeric' ? 'Square # (e.g. 16 or D2)' : 'Cell (e.g. D2 or 16)' ?>" style="padding:6px;width:140px;text-transform:uppercase;">
-    <input type="text" name="prize" required placeholder="Prize (e.g. 1st Prize, Cake)" style="padding:6px;width:250px;">
-    <button type="submit" class="primary">Assign Prize</button>
-</form>
+<!-- ===================================================================== -->
+<!-- SECTION 1: INTERACTIVE ASSIGNMENT GRID & PRIZES                      -->
+<!-- ===================================================================== -->
+<div class="cells-grid-section" style="margin-bottom:30px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">
+        <div>
+            <h3 style="margin:0; font-size:1.25em; color:#2d5016;">🎲 Interactive Paddock Grid &bull; <?= htmlspecialchars($viewEvent['event_name']) ?></h3>
+            <p style="margin:2px 0 0; font-size:0.85em; color:#64748b;">
+                <?= $soldCount ?> sold &bull; <?= $availableSquares ?> available of <?= $totalSquares ?> squares
+            </p>
+        </div>
 
-<!-- Multi-Cell Visual Manual Assignment -->
-<div style="margin-bottom:20px; background:white; border-radius:8px; border:1px solid #ddd; padding:15px; box-shadow:0 1px 4px rgba(0,0,0,0.06);">
-    <h3 style="margin-top:0; color:#2d5016;">🎲 Manual Cell Assignment (Interactive Grid &amp; Multi-Select)</h3>
+        <!-- Quick Award Prize by Ref Form -->
+        <?php if ($canManage): ?>
+        <form method="POST" action="admin.php?tab=cells&view=<?= $evId ?>" style="display:inline-flex; align-items:center; gap:6px; margin:0;">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+            <input type="hidden" name="action" value="assign_prize_by_ref">
+            <input type="hidden" name="event_db_id" value="<?= $evId ?>">
+            <input type="text" name="cell_reference" placeholder="Square (e.g. <?= $cellNaming === 'numeric' ? '16' : 'D4' ?>)" required style="width:115px; padding:6px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.85em;">
+            <input type="text" name="prize" placeholder="Prize (e.g. 1st Place)" required style="width:150px; padding:6px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.85em;">
+            <button type="submit" class="primary" style="padding:6px 12px; font-size:0.85em;">🏆 Award Prize</button>
+        </form>
+        <?php endif; ?>
+    </div>
 
-    <form method="POST" action="?tab=cells&view=<?= $viewEventId ?>" id="adminManualAssignForm" autocomplete="off">
-        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-        <input type="hidden" name="action" value="assign">
-        <input type="hidden" name="tab" value="cells">
-        <input type="hidden" name="event_db_id" value="<?= $viewEventId ?>">
-        <input type="hidden" name="selected_cells" id="adminSelectedCellsInput" value="">
-
-        <div style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px;">
-            <input type="text" name="buyer_name" placeholder="Buyer Name *" required style="padding:8px 12px; border:1px solid #ccc; border-radius:4px; width:180px;">
-            <input type="email" name="buyer_email" placeholder="Email (optional)" style="padding:8px 12px; border:1px solid #ccc; border-radius:4px; width:180px;">
-            <input type="text" name="ticket_id" placeholder="Ticket / Ref # (optional)" style="padding:8px 12px; border:1px solid #ccc; border-radius:4px; width:170px;">
-            
-            <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.9em; margin-left:5px; width:auto; cursor:pointer;">
-                <input type="checkbox" name="is_paid" value="1" checked style="width:auto;"> Marked as Paid
-            </label>
-
-            <div style="margin-left:auto; display:flex; gap:6px; align-items:center;">
-                <span style="font-size:0.85em; color:#666; font-weight:bold;">Quick:</span>
-                <button type="button" class="btn" style="background:#4a7c23; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminAddRandom(1)">+1 Random</button>
-                <button type="button" class="btn" style="background:#4a7c23; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminAddRandom(3)">+3 Random</button>
-                <button type="button" class="btn" style="background:#4a7c23; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminAddRandom(5)">+5 Random</button>
-                <button type="button" class="btn" style="background:#6c757d; color:#ffffff; padding:5px 10px; font-size:0.8em; font-weight:bold; cursor:pointer;" onclick="adminClearSelection()">Clear</button>
+    <!-- Manual Assignment Control Box -->
+    <?php if ($canManage): ?>
+    <div style="background:#fff; border-radius:10px; padding:18px 22px; box-shadow:0 1px 4px rgba(0,0,0,0.06); margin-bottom:18px; border:1.5px solid #e2e8f0;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+            <strong style="color:#2d5016; font-size:0.95em;">✍️ Manual Square Assignment &bull; Click available squares below or use Quick Random:</strong>
+            <div style="display:inline-flex; gap:6px; align-items:center;">
+                <button type="button" onclick="adminAddRandom(1)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+1 Random</button>
+                <button type="button" onclick="adminAddRandom(3)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+3 Random</button>
+                <button type="button" onclick="adminAddRandom(5)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+5 Random</button>
+                <button type="button" onclick="adminClearSelection()" class="btn btn-sm danger" style="font-size:0.8em; padding:4px 8px;">✕ Clear</button>
             </div>
         </div>
 
-        <div style="background:#f8f9fa; border:1px solid #e2e8f0; border-radius:6px; padding:10px; max-height:300px; overflow:auto; margin-bottom:12px;">
-            <div style="display:grid; grid-template-columns: 24px repeat(<?= $gridCols ?>, minmax(28px, 1fr)); gap:2px; font-size:11px; text-align:center;">
-                <div style="color:#888; font-weight:bold;"></div>
-                <?php foreach ($colLetters as $col): ?>
-                    <div style="color:#666; font-weight:bold; padding:2px 0;"><?= $col ?></div>
-                <?php endforeach; ?>
+        <form method="POST" action="admin.php?tab=cells&view=<?= $evId ?>" id="manualAssignForm">
+            <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+            <input type="hidden" name="action" value="assign">
+            <input type="hidden" name="event_db_id" value="<?= $evId ?>">
+            <input type="hidden" name="selected_cells" id="admin_selected_cells_input" value="">
 
-                <?php for ($r = 1; $r <= $gridRows; $r++): ?>
-                    <div style="color:#666; font-weight:bold; display:flex; align-items:center; justify-content:center;"><?= $r ?></div>
-                    <?php foreach ($colLetters as $c): 
-                        $ref = $c . $r;
-                        $displayRef = formatCellRef($ref, $gridCols, $cellNaming);
-                        $isSold = isset($soldCells[$ref]);
-                    ?>
-                        <div class="admin-grid-cell <?= $isSold ? 'sold' : 'available' ?>" 
-                             data-cell="<?= $ref ?>" 
-                             data-display="<?= $displayRef ?>"
-                             title="<?= $isSold ? ('Sold to ' . htmlspecialchars($soldCells[$ref]) . ' [' . $displayRef . ']') : ('Available: ' . $displayRef . ($cellNaming === 'numeric' ? ' (' . $ref . ')' : '')) ?>"
-                             onclick="adminToggleCell(this)">
-                            <?= $displayRef ?>
-                        </div>
-                    <?php endforeach; ?>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; align-items:flex-end;">
+                <div>
+                    <label style="display:block; font-size:0.82em; font-weight:bold; color:#475569; margin-bottom:4px;">Buyer Name *</label>
+                    <input type="text" name="buyer_name" id="assign_buyer_name" required placeholder="Full Name" style="width:100%; padding:8px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9em;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:0.82em; font-weight:bold; color:#475569; margin-bottom:4px;">Buyer Email / Phone</label>
+                    <input type="text" name="buyer_email" placeholder="Optional contact" style="width:100%; padding:8px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9em;">
+                </div>
+                <div>
+                    <label style="display:block; font-size:0.82em; font-weight:bold; color:#475569; margin-bottom:4px;">Ticket / Receipt Ref</label>
+                    <input type="text" name="ticket_id" placeholder="Auto-generated if blank" style="width:100%; padding:8px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9em;">
+                </div>
+                <div style="display:flex; align-items:center; padding-bottom:8px;">
+                    <label style="font-size:0.85em; font-weight:bold; color:#334155; cursor:pointer;">
+                        <input type="checkbox" name="is_paid" value="1" checked style="margin-right:6px;">
+                        Mark as Paid (Cash)
+                    </label>
+                </div>
+                <div>
+                    <button type="submit" class="primary" id="assignSubmitBtn" disabled style="width:100%; padding:9px; font-size:0.9em; opacity:0.6;">
+                        Assign Squares (<span id="adminSelectedCount">0</span>)
+                    </button>
+                </div>
+            </div>
+            <div id="selectedSquaresPreview" style="margin-top:10px; font-size:0.85em; color:#2d5016; font-weight:bold; display:none;">
+                Selected: <span id="selectedSquaresList" style="color:#0f172a;"></span>
+            </div>
+        </form>
+    </div>
+    <?php endif; ?>
+
+    <!-- Interactive Admin Grid (With Column & Row Headers) -->
+    <div style="background:#fff; border-radius:10px; padding:18px; box-shadow:0 1px 4px rgba(0,0,0,0.06); overflow-x:auto;">
+        <div style="display:grid; grid-template-columns:30px repeat(<?= $gridCols ?>, minmax(36px, 1fr)); gap:3px;">
+            <!-- Top Header Corner -->
+            <div style="height:24px;"></div>
+            <!-- Column Letters A-Z -->
+            <?php foreach ($colLabels as $cl): ?>
+                <div style="height:24px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:bold; color:#64748b;">
+                    <?= htmlspecialchars($cl) ?>
+                </div>
+            <?php endforeach; ?>
+
+            <!-- Rows with Row Numbers -->
+            <?php for ($r = 1; $r <= $gridRows; $r++): ?>
+                <div style="display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:bold; color:#64748b;">
+                    <?= $r ?>
+                </div>
+                <?php for ($c = 1; $c <= $gridCols; $c++): 
+                    $canonical = $colLabels[$c - 1] . $r;
+                    $isTaken = isset($soldMap[$canonical]);
+                    $cellData = $isTaken ? $soldMap[$canonical] : null;
+                    $hasPrize = $isTaken && !empty($cellData['prize']);
+                    $isPaidSquare = $isTaken && !empty($cellData['is_paid']);
+                    $displayRef = function_exists('formatCellRef') ? formatCellRef($canonical, $gridCols, $cellNaming) : $canonical;
+                    
+                    $cellClasses = 'admin-grid-cell';
+                    $bgColor = '#7bc67b';
+                    $textColor = '#2c5e2c';
+                    $border = '1px solid #5aa35a';
+                    $cursor = 'pointer';
+
+                    if ($hasPrize) {
+                        $bgColor = '#fef08a';
+                        $textColor = '#854d0e';
+                        $border = '2px solid #eab308';
+                        $cursor = 'default';
+                    } elseif ($isTaken) {
+                        $bgColor = '#e8a87c';
+                        $textColor = '#6b3a1a';
+                        $border = '1px solid #d4845a';
+                        $cursor = 'default';
+                        if (!$isPaidSquare) {
+                            $border = '2px dashed #dc3545';
+                        }
+                    }
+                ?>
+                    <div 
+                        id="cell_node_<?= htmlspecialchars($canonical) ?>"
+                        class="<?= $cellClasses ?>"
+                        data-ref="<?= htmlspecialchars($canonical) ?>"
+                        data-display="<?= htmlspecialchars($displayRef) ?>"
+                        data-taken="<?= $isTaken ? '1' : '0' ?>"
+                        onclick="adminToggleCell('<?= htmlspecialchars($canonical) ?>')"
+                        title="<?= $isTaken ? htmlspecialchars($cellData['buyer_name'] . ($hasPrize ? ' - Prize: ' . $cellData['prize'] : '')) : 'Available: Click to select' ?>"
+                        style="aspect-ratio:1; min-width:36px; background:<?= $bgColor ?>; color:<?= $textColor ?>; border:<?= $border ?>; border-radius:4px; display:flex; align-items:center; justify-content:center; font-weight:bold; font-size:11px; cursor:<?= $cursor ?>; user-select:none; transition:transform 0.1s;">
+                        <?= htmlspecialchars($displayRef) ?><?= $hasPrize ? ' 🏆' : '' ?>
+                    </div>
                 <?php endfor; ?>
-            </div>
+            <?php endfor; ?>
         </div>
-
-        <div style="display:flex; justify-content:space-between; align-items:center; background:#edf7ed; border:1px solid #c8e6c9; padding:10px 14px; border-radius:6px;">
-            <span id="adminSelectionSummary" style="font-size:0.95em; color:#1b5e20; font-weight:bold;">
-                No cells selected (click squares above or tap Quick Random)
-            </span>
-            <button type="submit" class="primary" id="adminSubmitBtn" disabled style="padding:8px 20px;">
-                Assign Selected Cells
-            </button>
-        </div>
-    </form>
+    </div>
 </div>
 
-<style>
-.admin-grid-cell {
-    aspect-ratio: 1; border-radius: 3px; font-weight: bold;
-    display: flex; align-items: center; justify-content: center;
-    user-select: none; transition: transform 0.1s;
-}
-.admin-grid-cell.available {
-    background: #7bc67b; border: 1px solid #5aa35a; color: #1e461e; cursor: pointer;
-}
-.admin-grid-cell.available:hover {
-    background: #90d690; transform: scale(1.1); z-index: 5;
-}
-.admin-grid-cell.sold {
-    background: #e0a37e; border: 1px solid #ba7c57; color: #5a2e12; opacity: 0.5; cursor: not-allowed;
-}
-.admin-grid-cell.selected {
-    background: #ffc107 !important; border: 2px solid #b8860b !important; color: #000 !important;
-    font-weight: 900; transform: scale(1.15); z-index: 6; box-shadow: 0 0 6px rgba(255,193,7,0.9);
-}
-</style>
-
 <script>
-let adminSelected = new Set();
-const adminCellNaming = '<?= $cellNaming ?>';
-const adminGridCols = <?= $gridCols ?>;
+let adminSelectedCells = new Set();
+const allAvailableRefs = <?= json_encode(array_values(array_filter(array_map(function($r) use ($gridCols, $colLabels) {
+    $cellsInRow = [];
+    for ($c = 1; $c <= $gridCols; $c++) {
+        $cellsInRow[] = $colLabels[$c - 1] . $r;
+    }
+    return $cellsInRow;
+}, range(1, $gridRows)), function($rowCells) use ($soldMap) {
+    return true;
+}))) ?>.flat().filter(ref => !<?= json_encode(array_fill_keys(array_keys($soldMap), true)) ?>[ref]);
 
-function adminToggleCell(el) {
-    if (el.classList.contains('sold')) return;
-    const ref = el.dataset.cell;
-    if (adminSelected.has(ref)) {
-        adminSelected.delete(ref);
-        el.classList.remove('selected');
+function adminFormatDisplay(ref) {
+    if ('<?= $cellNaming ?>' !== 'numeric') return ref;
+    const m = ref.match(/^([A-Z]+)(\d+)$/i);
+    if (!m) return ref;
+    let col = 0;
+    for (let i = 0; i < m[1].length; i++) {
+        col = col * 26 + (m[1].charCodeAt(i) - 64);
+    }
+    return ((parseInt(m[2], 10) - 1) * <?= $gridCols ?>) + col;
+}
+
+function adminToggleCell(ref) {
+    const node = document.getElementById('cell_node_' + ref);
+    if (!node || node.dataset.taken === '1') return;
+
+    if (adminSelectedCells.has(ref)) {
+        adminSelectedCells.delete(ref);
+        node.style.background = '#7bc67b';
+        node.style.color = '#2c5e2c';
+        node.style.border = '1px solid #5aa35a';
+        node.style.transform = 'scale(1)';
     } else {
-        adminSelected.add(ref);
-        el.classList.add('selected');
+        adminSelectedCells.add(ref);
+        node.style.background = '#fde047';
+        node.style.color = '#713f12';
+        node.style.border = '2px solid #ca8a04';
+        node.style.transform = 'scale(1.12)';
     }
     adminUpdateSelectionUI();
 }
 
 function adminAddRandom(count) {
-    const available = Array.from(document.querySelectorAll('.admin-grid-cell.available:not(.selected)'));
-    if (available.length === 0) return alert('No remaining cells available in this grid!');
-
-    for (let i = 0; i < count; i++) {
-        if (available.length === 0) break;
-        const randIdx = Math.floor(Math.random() * available.length);
-        const chosen = available.splice(randIdx, 1)[0];
-        adminSelected.add(chosen.dataset.cell);
-        chosen.classList.add('selected');
+    const unselected = allAvailableRefs.filter(ref => !adminSelectedCells.has(ref));
+    for (let i = 0; i < count && unselected.length > 0; i++) {
+        const randIdx = Math.floor(Math.random() * unselected.length);
+        const chosen = unselected.splice(randIdx, 1)[0];
+        adminToggleCell(chosen);
     }
-    adminUpdateSelectionUI();
 }
 
 function adminClearSelection() {
-    document.querySelectorAll('.admin-grid-cell.selected').forEach(c => c.classList.remove('selected'));
-    adminSelected.clear();
+    adminSelectedCells.forEach(ref => {
+        const node = document.getElementById('cell_node_' + ref);
+        if (node) {
+            node.style.background = '#7bc67b';
+            node.style.color = '#2c5e2c';
+            node.style.border = '1px solid #5aa35a';
+            node.style.transform = 'scale(1)';
+        }
+    });
+    adminSelectedCells.clear();
     adminUpdateSelectionUI();
 }
 
-function adminFormatDisplay(ref) {
-    if (adminCellNaming !== 'numeric') return ref;
-    const m = ref.match(/^([A-Z])([0-9]+)$/);
-    if (!m) return ref;
-    const col = m[1].charCodeAt(0) - 64;
-    const row = parseInt(m[2], 10);
-    return ((row - 1) * adminGridCols) + col;
-}
-
 function adminUpdateSelectionUI() {
-    const count = adminSelected.size;
-    const input = document.getElementById('adminSelectedCellsInput');
-    const summary = document.getElementById('adminSelectionSummary');
-    const btn = document.getElementById('adminSubmitBtn');
+    const count = adminSelectedCells.size;
+    const submitBtn = document.getElementById('assignSubmitBtn');
+    const countSpan = document.getElementById('adminSelectedCount');
+    const input = document.getElementById('admin_selected_cells_input');
+    const previewBox = document.getElementById('selectedSquaresPreview');
+    const previewList = document.getElementById('selectedSquaresList');
 
-    input.value = Array.from(adminSelected).join(',');
+    if (countSpan) countSpan.textContent = count;
+    if (input) input.value = Array.from(adminSelectedCells).join(',');
 
-    if (count > 0) {
-        const displayList = Array.from(adminSelected).map(adminFormatDisplay);
-        summary.innerHTML = `Selected <strong>${count}</strong> square${count > 1 ? 's' : ''}: <span style="color:#2d5016;">${displayList.join(', ')}</span>`;
-        btn.textContent = `Assign ${count} Square${count > 1 ? 's' : ''}`;
-        btn.disabled = false;
-    } else {
-        summary.textContent = 'No cells selected (click squares above or tap Quick Random)';
-        btn.textContent = 'Assign Selected Cells';
-        btn.disabled = true;
+    if (submitBtn) {
+        if (count > 0) {
+            submitBtn.disabled = false;
+            submitBtn.style.opacity = '1';
+            submitBtn.style.cursor = 'pointer';
+        } else {
+            submitBtn.disabled = true;
+            submitBtn.style.opacity = '0.6';
+            submitBtn.style.cursor = 'not-allowed';
+        }
+    }
+
+    if (previewBox && previewList) {
+        if (count > 0) {
+            previewBox.style.display = 'block';
+            previewList.textContent = Array.from(adminSelectedCells).map(adminFormatDisplay).join(', ');
+        } else {
+            previewBox.style.display = 'none';
+            previewList.textContent = '';
+        }
     }
 }
 </script>
 <?php endif; ?>
 
 <?php if ($showTable): ?>
-<!-- TREASURER CASH & ONLINE SALES RECONCILIATION -->
-<?php
-$pricingMap = [];
-if (!empty($viewEvent['pricing_tiers'])) {
-    $decoded = json_decode($viewEvent['pricing_tiers'], true);
-    if (is_array($decoded)) $pricingMap = $decoded;
-}
-if (empty($pricingMap)) {
-    $pricingMap = defined('DEFAULT_PRICING_TIERS') ? DEFAULT_PRICING_TIERS : [1 => 10.00, 3 => 25.00, 5 => 40.00, 10 => 70.00];
-}
-
-backfillMissingCellPrices($db, $viewEventId, $pricingMap);
-
-$reconData = calculateEventCashReconciliation($db, $viewEventId, $pricingMap);
-$summaryChannels = $reconData['summary'];
-$buyerBatches = $reconData['buyer_batches'];
-$totals = $reconData['totals'];
-
-$batchCounts = [];
-foreach ($cells as $c) {
-    $bRef = $c['order_id'] ?: $c['ticket_id'];
-    $batchCounts[$bRef] = ($batchCounts[$bRef] ?? 0) + 1;
-}
-
-$cntStmt = $db->prepare("SELECT COUNT(*) FROM cow_bingo_cells WHERE event_id = ? AND buyer_email IS NOT NULL AND buyer_email != ''");
-$cntStmt->execute([$viewEventId]);
-$contactsCount = (int) $cntStmt->fetchColumn();
-?>
-
-<!-- KPI CARDS SUMMARY FOR TREASURER -->
-<div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:20px;">
-    <div style="background:#fff; border-radius:8px; border:1.5px solid #28a745; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-        <div style="font-size:0.8em; font-weight:bold; color:#155724; text-transform:uppercase;">💵 Physical Cash in Envelopes</div>
-        <div style="font-size:1.6em; font-weight:900; color:#155724; margin:4px 0;">$<?= number_format($totals['cash_paid'], 2) ?></div>
-        <div style="font-size:0.85em; color:#555;">
-            Expected: <strong>$<?= number_format($totals['cash_expected'], 2) ?></strong> (<?= $totals['cash_squares'] ?> squares)
+<!-- ===================================================================== -->
+<!-- SECTION 2: BOOKINGS, CASH RECONCILIATION & UNPAID MANAGEMENT         -->
+<!-- ===================================================================== -->
+<div class="bookings-table-section">
+    <!-- KPI Summary Row -->
+    <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:20px;">
+        <div style="background:#fff; border-radius:8px; padding:16px 20px; box-shadow:0 1px 4px rgba(0,0,0,0.06); border-left:4px solid #16a34a;">
+            <span style="font-size:0.8em; color:#64748b; font-weight:bold; text-transform:uppercase;">Total Paid Revenue</span>
+            <h3 style="margin:4px 0 0; font-size:1.6em; color:#16a34a;">$<?= number_format($totalCollected, 2) ?></h3>
+            <small style="color:#64748b;"><?= $paidCount ?> squares collected</small>
+        </div>
+        <div style="background:#fff; border-radius:8px; padding:16px 20px; box-shadow:0 1px 4px rgba(0,0,0,0.06); border-left:4px solid #dc2626;">
+            <span style="font-size:0.8em; color:#64748b; font-weight:bold; text-transform:uppercase;">Awaiting Payment</span>
+            <h3 style="margin:4px 0 0; font-size:1.6em; color:#dc2626;">$<?= number_format($unpaidExpected, 2) ?></h3>
+            <small style="color:#64748b;"><?= $unpaidCount ?> squares unpaid</small>
+        </div>
+        <div style="background:#fff; border-radius:8px; padding:16px 20px; box-shadow:0 1px 4px rgba(0,0,0,0.06); border-left:4px solid #2d5016;">
+            <span style="font-size:0.8em; color:#64748b; font-weight:bold; text-transform:uppercase;">Squares Sold</span>
+            <h3 style="margin:4px 0 0; font-size:1.6em; color:#2d5016;"><?= $soldCount ?> <span style="font-size:0.6em; color:#64748b;">/ <?= $totalSquares ?></span></h3>
+            <small style="color:#64748b;"><?= $availableSquares ?> available in paddock</small>
         </div>
     </div>
 
-    <div style="background:#fff; border-radius:8px; border:1.5px solid #0284c7; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-        <div style="font-size:0.8em; font-weight:bold; color:#0369a1; text-transform:uppercase;">💳 Online hi.events / Card</div>
-        <div style="font-size:1.6em; font-weight:900; color:#0369a1; margin:4px 0;">$<?= number_format($totals['online_paid'], 2) ?></div>
-        <div style="font-size:0.85em; color:#555;">
-            Expected: <strong>$<?= number_format($totals['online_expected'], 2) ?></strong> (<?= $totals['online_squares'] ?> squares)
+    <!-- Controls Bar: Filter Pills, Sort By, and Bulk Actions -->
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px; background:#fff; padding:12px 18px; border-radius:8px; box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+        <!-- Filter Pills: All / Paid / Unpaid -->
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span style="font-weight:bold; font-size:0.85em; color:#475569;">Filter:</span>
+            <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=all&sort=<?= urlencode($sortBy) ?>" style="padding:4px 12px; border-radius:14px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $filterStatus === 'all' ? 'background:#2d5016; color:#fff;' : 'background:#f1f5f9; color:#475569; border:1px solid #cbd5e1;' ?>">
+                All (<?= $soldCount ?>)
+            </a>
+            <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=paid&sort=<?= urlencode($sortBy) ?>" style="padding:4px 12px; border-radius:14px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $filterStatus === 'paid' ? 'background:#16a34a; color:#fff;' : 'background:#f1f5f9; color:#475569; border:1px solid #cbd5e1;' ?>">
+                💵 Paid (<?= $paidCount ?>)
+            </a>
+            <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=unpaid&sort=<?= urlencode($sortBy) ?>" style="padding:4px 12px; border-radius:14px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $filterStatus === 'unpaid' ? 'background:#dc2626; color:#fff;' : 'background:#f1f5f9; color:#475569; border:1px solid #cbd5e1;' ?>">
+                ⚠️ Unpaid (<?= $unpaidCount ?>)
+            </a>
+        </div>
+
+        <!-- Sort Options & Bulk Actions -->
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span style="font-weight:bold; font-size:0.85em; color:#475569;">Sort:</span>
+            <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=<?= urlencode($filterStatus) ?>&sort=days_unpaid" style="padding:4px 10px; border-radius:6px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $sortBy === 'days_unpaid' ? 'background:#fef3c7; color:#92400e; border:1px solid #fde047;' : 'background:#f8fafc; color:#475569; border:1px solid #cbd5e1;' ?>">
+                ⏳ Days Unpaid
+            </a>
+            <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=<?= urlencode($filterStatus) ?>&sort=cell" style="padding:4px 10px; border-radius:6px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $sortBy === 'cell' ? 'background:#f1f5f9; color:#1e293b; border:1px solid #94a3b8;' : 'background:#f8fafc; color:#475569; border:1px solid #cbd5e1;' ?>">
+                🔢 Square
+            </a>
+            <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=<?= urlencode($filterStatus) ?>&sort=buyer" style="padding:4px 10px; border-radius:6px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $sortBy === 'buyer' ? 'background:#f1f5f9; color:#1e293b; border:1px solid #94a3b8;' : 'background:#f8fafc; color:#475569; border:1px solid #cbd5e1;' ?>">
+                👤 Buyer
+            </a>
+
+            <!-- Download CSV -->
+            <a href="admin.php?action=export_csv&event_db_id=<?= $evId ?>" class="btn btn-sm" style="background:#f0fdf4; border-color:#bbf7d0; color:#166534; font-size:0.8em; padding:5px 10px;">
+                📥 Export CSV
+            </a>
+
+            <!-- Remove All Unpaid Squares Button -->
+            <?php if ($canManage && $unpaidCount > 0): ?>
+            <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('⚠️ REMOVE ALL UNPAID SQUARES ⚠️\n\nAre you sure you want to release all <?= $unpaidCount ?> unpaid squares for this event?\n\nAll unpaid reservations will be removed and returned to the available paddock pool.\n\nThis action cannot be undone.');">
+                <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                <input type="hidden" name="action" value="delete_all_unpaid">
+                <input type="hidden" name="event_db_id" value="<?= $evId ?>">
+                <button type="submit" class="danger btn-sm" style="font-size:0.8em; padding:5px 10px;">
+                    🗑️ Remove All Unpaid (<?= $unpaidCount ?>)
+                </button>
+            </form>
+            <?php endif; ?>
         </div>
     </div>
 
-    <div style="background:#fff; border-radius:8px; border:1.5px solid #2d5016; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-        <div style="font-size:0.8em; font-weight:bold; color:#2d5016; text-transform:uppercase;">🏆 Total Revenue Collected</div>
-        <div style="font-size:1.6em; font-weight:900; color:#2d5016; margin:4px 0;">$<?= number_format($totals['total_paid'], 2) ?></div>
-        <div style="font-size:0.85em; color:#555;">
-            Total Expected: <strong>$<?= number_format($totals['total_expected'], 2) ?></strong> (<?= $totals['total_squares'] ?> squares)
+    <!-- Bookings Ledger Table -->
+    <?php if (empty($displayCells)): ?>
+        <div style="background:#fff; border-radius:8px; padding:36px; text-align:center; color:#64748b;">
+            <p style="font-size:1.05em; margin:0;">No square reservations match the selected filter (<strong><?= htmlspecialchars(ucfirst($filterStatus)) ?></strong>).</p>
         </div>
-    </div>
+    <?php else: ?>
+        <div style="overflow-x:auto; background:#fff; border-radius:8px; box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Square</th>
+                        <th>Buyer Name</th>
+                        <th>Contact</th>
+                        <th>Ticket / Order Ref</th>
+                        <th>Status</th>
+                        <th>Amount</th>
+                        <th>Prize</th>
+                        <?php if ($canManage): ?><th>Actions</th><?php endif; ?>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($displayCells as $cell): 
+                        $isPaid = !empty($cell['is_paid']);
+                        $canonical = $cell['cell_reference'];
+                        $dispSquare = function_exists('formatCellRef') ? formatCellRef($canonical, $gridCols, $cellNaming) : $canonical;
+                        $orderId = $cell['order_id'] ?? '';
+                        $isExternal = !empty($orderId) && strpos($orderId, 'MANUAL-') !== 0 && strpos($orderId, 'CASH-') !== 0;
+                        
+                        $createdTime = !empty($cell['created_at']) ? strtotime($cell['created_at']) : 0;
+                        $daysOld = $createdTime > 0 ? (int)floor((time() - $createdTime) / 86400) : 0;
+                    ?>
+                    <tr style="<?= !$isPaid ? 'background:#fffbf7;' : '' ?>">
+                        <td style="font-weight:bold; font-size:1.05em; color:#0f172a;">
+                            <?= htmlspecialchars($dispSquare) ?>
+                        </td>
+                        <td style="font-weight:600; color:#1e293b;">
+                            <?= htmlspecialchars($cell['buyer_name']) ?>
+                        </td>
+                        <td style="color:#64748b; font-size:0.88em;">
+                            <?= htmlspecialchars($cell['buyer_email'] ?? '-') ?>
+                        </td>
+                        <td style="font-family:monospace; font-size:0.85em; color:#475569;">
+                            <?= htmlspecialchars($cell['ticket_id']) ?><br>
+                            <small style="color:#94a3b8;"><?= htmlspecialchars($orderId) ?></small>
+                        </td>
+                        <td>
+                            <?php if ($isPaid): ?>
+                                <span style="display:inline-block; font-size:0.8em; font-weight:bold; padding:2px 8px; border-radius:10px; background:#dcfce7; color:#15803d;">
+                                    ✓ Paid
+                                </span>
+                            <?php else: ?>
+                                <span style="display:inline-block; font-size:0.8em; font-weight:bold; padding:2px 8px; border-radius:10px; background:#fef2f2; color:#dc2626; border:1px solid #fecaca;">
+                                    ⚠️ Unpaid <?= $daysOld > 0 ? '(' . $daysOld . 'd old)' : '(today)' ?>
+                                </span>
+                            <?php endif; ?>
+                        </td>
+                        <td style="font-weight:bold; color:<?= $isPaid ? '#059669' : '#d97706' ?>;">
+                            $<?= number_format((float)($isPaid ? ($cell['price_paid'] ?? 0) : ($cell['order_amount'] ?? 0)), 2) ?>
+                        </td>
+                        <td>
+                            <?php if (!empty($cell['prize'])): ?>
+                                <div style="display:inline-flex; align-items:center; gap:4px;">
+                                    <span style="font-weight:bold; color:#854d0e; background:#fef9c3; padding:2px 6px; border-radius:4px; font-size:0.85em;">
+                                        🏆 <?= htmlspecialchars($cell['prize']) ?>
+                                    </span>
+                                    <?php if ($canManage): ?>
+                                    <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('Remove prize from square <?= htmlspecialchars(addslashes($dispSquare)) ?>?');">
+                                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                        <input type="hidden" name="action" value="assign_prize">
+                                        <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
+                                        <input type="hidden" name="prize" value="">
+                                        <button type="submit" title="Remove Prize" style="background:none; border:none; color:#dc2626; font-size:0.85em; padding:0 2px; cursor:pointer;">🏆✖</button>
+                                    </form>
+                                    <?php endif; ?>
+                                </div>
+                            <?php else: ?>
+                                <span style="color:#cbd5e1;">&mdash;</span>
+                            <?php endif; ?>
+                        </td>
+                        <?php if ($canManage): ?>
+                        <td style="white-space:nowrap;">
+                            <div style="display:inline-flex; gap:4px; align-items:center;">
+                                <?php if (!$isPaid): ?>
+                                <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="mark_paid">
+                                    <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
+                                    <button type="submit" class="primary btn-sm" style="font-size:0.75em; padding:3px 8px;">💵 Mark Paid</button>
+                                </form>
 
-    <div style="background:#fff; border-radius:8px; border:1.5px solid #d97706; padding:14px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-        <div style="font-size:0.8em; font-weight:bold; color:#b45309; text-transform:uppercase;">🏷️ Multi-Ticket Discounts</div>
-        <div style="font-size:1.6em; font-weight:900; color:#b45309; margin:4px 0;">-$<?= number_format($totals['total_discount'], 2) ?></div>
-        <div style="font-size:0.85em; color:#555;">
-            Unpaid Pending: <strong>$<?= number_format($totals['unpaid_total'], 2) ?></strong>
+                                <?php if ($isExternal): ?>
+                                <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('Cancel reservation for <?= htmlspecialchars(addslashes($cell['buyer_name'])) ?> (Order #<?= htmlspecialchars(addslashes($orderId)) ?>)?\n\nThis will notify the buyer via Hi.Events message and release the square.');">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="cancel_and_notify">
+                                    <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
+                                    <button type="submit" class="btn-sm warning" style="font-size:0.75em; padding:3px 8px;">🚫 Cancel &amp; Notify</button>
+                                </form>
+                                <?php endif; ?>
+                                <?php endif; ?>
+                                
+                                <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('Remove square <?= htmlspecialchars(addslashes($dispSquare)) ?> assigned to <?= htmlspecialchars(addslashes($cell['buyer_name'])) ?>?');">
+                                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                                    <input type="hidden" name="action" value="delete_cell">
+                                    <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
+                                    <button type="submit" class="btn-sm" style="font-size:0.75em; padding:3px 8px; color:#dc2626;">✕ Remove</button>
+                                </form>
+                            </div>
+                        </td>
+                        <?php endif; ?>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
         </div>
-    </div>
-</div>
+    <?php endif; ?>
 
-<!-- CHANNEL RECONCILIATION TABLE -->
-<div style="background:white; border-radius:8px; border:1px solid #d2d6dc; padding:18px; margin-bottom:20px; box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:10px;">
+    <!-- Post-Event Privacy Cleanup Panel (NZ Privacy Act) -->
+    <?php 
+    $cntStmt = $db->prepare("SELECT COUNT(*) FROM cow_bingo_cells WHERE event_id = ? AND buyer_email IS NOT NULL AND buyer_email != ''");
+    $cntStmt->execute([$evId]);
+    $contactsCount = (int)$cntStmt->fetchColumn();
+    ?>
+    <?php if ($canManage && $contactsCount > 0): ?>
+    <div style="margin-top:20px; padding:15px; background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
         <div>
-            <h3 style="margin:0 0 4px; color:#2d5016;">💰 Channel &amp; Device Cash Breakdown</h3>
-            <span style="color:#666; font-size:0.9em;">Reconciliation per field iPad and online sales channel.</span>
+            <strong style="color:#9a3412;">🔒 Post-Event Privacy Cleanup (NZ Privacy Act)</strong>
+            <p style="margin:4px 0 0; color:#666; font-size:0.85em;">
+                Wipe customer emails &amp; phone numbers while retaining buyer names, square coordinates, and audit totals.
+            </p>
         </div>
-        <div>
-            <a href="admin.php?action=export_csv&event_db_id=<?= $viewEventId ?>" class="btn" style="background:#15803d; font-size:0.9em; padding:8px 14px;">📥 Export Audit CSV for Treasurer</a>
-        </div>
-    </div>
-
-    <table style="margin-top:5px; box-shadow:none; border:1px solid #eee;">
-        <thead>
-            <tr>
-                <th>Seller / Channel</th>
-                <th>Type</th>
-                <th>Transactions</th>
-                <th>Squares Sold</th>
-                <th>Expected Total</th>
-                <th>Actual Paid</th>
-                <th>Discrepancy / Variance</th>
-            </tr>
-        </thead>
-        <tbody>
-            <?php foreach ($summaryChannels as $r): 
-                $variance = $r['actual_paid'] - $r['expected_amount'];
-            ?>
-            <tr>
-                <td><strong><?= htmlspecialchars($r['channel_label']) ?></strong></td>
-                <td>
-                    <?= $r['is_online'] 
-                        ? '<span style="background:#e0f2fe;color:#0369a1;padding:2px 7px;border-radius:4px;font-weight:bold;font-size:0.8em;">Online</span>'
-                        : '<span style="background:#dcfce7;color:#15803d;padding:2px 7px;border-radius:4px;font-weight:bold;font-size:0.8em;">Cash</span>' ?>
-                </td>
-                <td><?= $r['batch_count'] ?></td>
-                <td><?= $r['total_squares'] ?></td>
-                <td>$<?= number_format($r['expected_amount'], 2) ?></td>
-                <td>
-                    <strong style="color:<?= $r['is_online'] ? '#0369a1' : '#2d5016' ?>;">
-                        $<?= number_format($r['actual_paid'], 2) ?>
-                    </strong>
-                    <?php if ($r['unpaid_amount'] > 0): ?>
-                        <small style="color:#dc3545; display:block;">($<?= number_format($r['unpaid_amount'], 2) ?> unpaid)</small>
-                    <?php endif; ?>
-                </td>
-                <td>
-                    <?php if ($variance == 0): ?>
-                        <span style="color:#15803d; font-weight:bold;">Balanced (+$0.00)</span>
-                    <?php elseif ($variance > 0): ?>
-                        <span style="color:#2563eb; font-weight:bold;">+$<?= number_format($variance, 2) ?> (Over)</span>
-                    <?php else: ?>
-                        <span style="color:#dc3545; font-weight:bold;">-$<?= number_format(abs($variance), 2) ?> (Short/Pending)</span>
-                    <?php endif; ?>
-                </td>
-            </tr>
-            <?php endforeach; ?>
-            <tr style="background:#f8fafc; font-weight:bold; border-top:2px solid #ccc;">
-                <td>TOTALS</td>
-                <td>-</td>
-                <td><?= array_sum(array_column($summaryChannels, 'batch_count')) ?></td>
-                <td><?= $totals['total_squares'] ?> squares</td>
-                <td>$<?= number_format($totals['total_expected'], 2) ?></td>
-                <td style="color:#2d5016; font-size:1.1em;">$<?= number_format($totals['total_paid'], 2) ?></td>
-                <td>
-                    <?php $totVariance = $totals['total_paid'] - $totals['total_expected']; ?>
-                    <span style="color:<?= $totVariance >= 0 ? '#15803d' : '#dc3545' ?>; font-weight:bold;">
-                        <?= $totVariance >= 0 ? '+' : '-' ?>$<?= number_format(abs($totVariance), 2) ?>
-                    </span>
-                </td>
-            </tr>
-        </tbody>
-    </table>
-</div>
-
-<!-- DETAILED BOOKINGS TABLE -->
-<div style="display:flex; justify-content:space-between; align-items:center; margin-top:20px;">
-    <h3 style="margin:0;">📋 Detailed Square Bookings &amp; Pricing Breakdown</h3>
-    <a href="admin.php?action=export_csv&event_db_id=<?= $viewEventId ?>" style="color:#2d5016; font-size:0.85em; font-weight:bold; text-decoration:none;">📥 Download as CSV &darr;</a>
-</div>
-
-<table>
-    <thead>
-        <tr>
-            <th><a href="?tab=table&view=<?= $viewEventId ?>&sort=cell" style="color:white;text-decoration:none;"><?= $cellNaming === 'numeric' ? 'Square #' : 'Cell' ?> <?= $sortBy === 'cell' ? '▼' : '' ?></a></th>
-            <th>Ticket ID</th>
-            <th>Order / Batch</th>
-            <th><a href="?tab=table&view=<?= $viewEventId ?>&sort=buyer" style="color:white;text-decoration:underline;">Buyer <?= $sortBy === 'buyer' ? '▼' : '' ?></a></th>
-            <th>Contact</th>
-            <th>Method</th>
-            <th>Expected Total</th>
-            <th>Actual Paid</th>
-            <th><a href="?tab=table&view=<?= $viewEventId ?>&sort=status" style="color:white;text-decoration:none;">Status <?= $sortBy === 'status' ? '▼' : '' ?></a></th>
-            <th>Seller</th>
-            <th>Prize</th>
-            <th>Actions</th>
-        </tr>
-    </thead>
-    <tbody>
-        <?php 
-        $seenBatchesInTable = [];
-        foreach ($cells as $cell): 
-            $bRef = $cell['order_id'] ?: $cell['ticket_id'];
-            $batchQty = $batchCounts[$bRef] ?? 1;
-            $isPaid = !empty($cell['is_paid']);
-            $isFirstInBatch = !isset($seenBatchesInTable[$bRef]);
-            $seenBatchesInTable[$bRef] = true;
-
-            $expectedBatch = calculateBatchPrice($batchQty, $pricingMap);
-            $actualPaidBatch = $isPaid 
-                ? (($cell['order_amount'] !== null && (float)$cell['order_amount'] > 0) ? (float)$cell['order_amount'] : $expectedBatch) 
-                : 0.00;
-            $unitShare = round(($isPaid ? $actualPaidBatch : $expectedBatch) / max(1, $batchQty), 2);
-            $cellDisplay = formatCellRef($cell['cell_reference'], $gridCols, $cellNaming);
-        ?>
-        <tr<?= $cell['prize'] ? ' style="background:#fff8e1;"' : '' ?>>
-            <td>
-                <strong><?= htmlspecialchars($cellDisplay) ?></strong>
-                <?php if ($cellNaming === 'numeric'): ?>
-                    <small style="color:#6b7280; display:block;">(<?= htmlspecialchars($cell['cell_reference']) ?>)</small>
-                <?php endif; ?>
-            </td>
-            <td><?= htmlspecialchars($cell['ticket_id']) ?></td>
-            <td><code style="font-size:0.85em;"><?= htmlspecialchars($bRef) ?></code></td>
-            <td><?= htmlspecialchars($cell['buyer_name']) ?></td>
-            <td><?= htmlspecialchars($cell['buyer_email'] ?? '') ?></td>
-            <td>
-                <span style="font-size:0.85em; font-weight:bold; color:<?= ($cell['payment_method'] ?? '') === 'online' ? '#0284c7' : '#15803d' ?>;">
-                    <?= ucfirst(htmlspecialchars($cell['payment_method'] ?? 'cash')) ?>
-                </span>
-            </td>
-            <td>
-                <?php if ($isFirstInBatch): ?>
-                    <strong>$<?= number_format($expectedBatch, 2) ?></strong>
-                    <?php if ($batchQty > 1): ?>
-                        <small style="display:block;color:#666;">(Batch of <?= $batchQty ?>)</small>
-                    <?php endif; ?>
-                <?php else: ?>
-                    <span style="color:#9ca3af; font-size:0.85em;" title="Included in batch total above">—</span>
-                <?php endif; ?>
-            </td>
-            <td>
-                <?php if ($isFirstInBatch): ?>
-                    <strong style="color:<?= $isPaid ? '#15803d' : '#dc3545' ?>;">$<?= number_format($actualPaidBatch, 2) ?></strong>
-                    <?php if ($batchQty > 1): ?>
-                        <small style="display:block;color:#666;">($<?= number_format($unitShare, 2) ?>/sq)</small>
-                    <?php endif; ?>
-                <?php else: ?>
-                    <span style="color:#9ca3af; font-size:0.85em;" title="Included in batch total above">—</span>
-                <?php endif; ?>
-            </td>
-            <td>
-                <?= $isPaid 
-                    ? '<span style="background:#d4edda;color:#155724;padding:3px 8px;border-radius:4px;font-weight:bold;font-size:0.85em;">🟢 Paid</span>' 
-                    : '<span style="background:#fff3cd;color:#856404;padding:3px 8px;border-radius:4px;font-weight:bold;font-size:0.85em;">🟡 Unpaid</span>' ?>
-            </td>
-            <td><span style="background:#e9ecef;padding:2px 7px;border-radius:4px;font-size:0.85em;font-weight:bold;"><?= htmlspecialchars($cell['assigned_by'] ?? 'hi.events') ?></span></td>
-            <td><?= $cell['prize'] ? '🏆 ' . htmlspecialchars($cell['prize']) : '' ?></td>
-            <td>
-                <?php if (empty($cell['is_paid'])): ?>
-                <form method="POST" action="?tab=table&view=<?= $viewEventId ?>&sort=<?= urlencode($sortBy) ?>" class="inline" style="margin-right:3px;">
-                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                    <input type="hidden" name="action" value="mark_paid">
-                    <input type="hidden" name="tab" value="table">
-                    <input type="hidden" name="cell_id" value="<?= $cell['id'] ?>">
-                    <button type="submit" style="background:#15803d;color:white;font-size:0.8em;padding:4px 8px;border-radius:4px;border:none;cursor:pointer;" title="Record cash received and mark square as Paid" onclick="return confirm('Mark payment received for <?= htmlspecialchars(addslashes($cell['buyer_name'])) ?>?')">💵 Mark Paid</button>
-                </form>
-
-                <form method="POST" action="?tab=table&view=<?= $viewEventId ?>&sort=<?= urlencode($sortBy) ?>" class="inline" style="margin-right:3px;" onsubmit="return confirm('Cancel in hi.events and message buyer?')">
-                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                    <input type="hidden" name="action" value="cancel_and_notify">
-                    <input type="hidden" name="tab" value="table">
-                    <input type="hidden" name="cell_id" value="<?= $cell['id'] ?>">
-                    <button type="submit" style="background:#dc3545;color:white;font-size:0.8em;padding:4px 8px;border-radius:4px;border:none;cursor:pointer;" title="Cancel on hi.events">Cancel</button>
-                </form>
-                <?php endif; ?>
-
-                <?php 
-                $removeMsg = $isPaid 
-                    ? "⚠️ CAUTION: " . htmlspecialchars(addslashes($cell['buyer_name'])) . " has ALREADY PAID for square " . $cellDisplay . " (Ticket: " . htmlspecialchars($cell['ticket_id']) . ")!\n\nAre you sure you want to permanently delete this paid booking and free up the square in the paddock?"
-                    : "Remove unpaid assignment for " . htmlspecialchars(addslashes($cell['buyer_name'])) . " (" . $cellDisplay . ")?";
-                ?>
-                <form method="POST" action="?tab=table&view=<?= $viewEventId ?>&sort=<?= urlencode($sortBy) ?>" class="inline" style="margin-right:3px;" onsubmit="return confirm('<?= $removeMsg ?>')">
-                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                    <input type="hidden" name="action" value="delete_cell">
-                    <input type="hidden" name="tab" value="table">
-                    <input type="hidden" name="cell_id" value="<?= $cell['id'] ?>">
-                    <button type="submit" class="danger">Remove</button>
-                </form>
-
-                <?php if ($cell['prize']): ?>
-                <form method="POST" action="?tab=table&view=<?= $viewEventId ?>&sort=<?= urlencode($sortBy) ?>" class="inline">
-                    <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
-                    <input type="hidden" name="action" value="assign_prize">
-                    <input type="hidden" name="tab" value="table">
-                    <input type="hidden" name="cell_id" value="<?= $cell['id'] ?>">
-                    <input type="hidden" name="prize" value="">
-                    <button type="submit" class="warning" title="Remove prize">🏆✖</button>
-                </form>
-                <?php endif; ?>
-            </td>
-        </tr>
-        <?php endforeach; ?>
-        <?php if (empty($cells)): ?><tr><td colspan="12" style="text-align:center;color:#999;">No cells assigned yet for this game</td></tr><?php endif; ?>
-    </tbody>
-</table>
-
-<!-- Post-Event Data Retention Cleanup (NZ Privacy Act) -->
-<div style="margin-top:25px; padding:15px; background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-    <div>
-        <strong style="color:#9a3412;">🔒 Post-Event Privacy Cleanup (NZ Privacy Act)</strong>
-        <p style="margin:4px 0 0; color:#666; font-size:0.85em;">
-            Once prizes have been paid out and cash is reconciled, wipe customer emails &amp; phone numbers from this event to adhere to data retention rules.<br>
-            <em style="color:#888;">(Buyer names, square coordinates, and financial audit totals are retained for historical records).</em>
-        </p>
-    </div>
-    <div>
-        <?php if ($contactsCount > 0): ?>
-        <form method="POST" action="?tab=table&view=<?= $viewEventId ?>&sort=<?= urlencode($sortBy) ?>" onsubmit="return confirm('Are you sure you want to permanently erase buyer emails and phone numbers for this event?\n\nMake sure your treasurer has exported the CSV first!')">
+        <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" onsubmit="return confirm('Permanently erase contact details for this event?\n\nExport the CSV first if you need the data!');">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
             <input type="hidden" name="action" value="purge_contacts">
-            <input type="hidden" name="tab" value="table">
-            <input type="hidden" name="event_db_id" value="<?= $viewEventId ?>">
-            <button type="submit" class="danger" style="padding:8px 14px; font-size:0.88em; cursor:pointer;">🧹 Purge Contacts (<?= $contactsCount ?> on file)</button>
+            <input type="hidden" name="event_db_id" value="<?= $evId ?>">
+            <button type="submit" class="danger" style="padding:8px 14px; font-size:0.88em;">
+                🧹 Purge Contacts (<?= $contactsCount ?> on file)
+            </button>
         </form>
-        <?php else: ?>
-        <span style="display:inline-block; background:#dcfce7; color:#166534; padding:6px 12px; border-radius:6px; font-size:0.85em; font-weight:bold;">
-            ✅ Contacts already purged
-        </span>
-        <?php endif; ?>
     </div>
+    <?php endif; ?>
 </div>
 <?php endif; ?>

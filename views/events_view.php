@@ -207,6 +207,18 @@ if (!function_exists('formatPricingTiersForInput')) {
                             <?= !empty($ev['allow_cell_selection']) ? 'Pick Square: ON' : 'Pick Square: OFF' ?>
                         </button>
                     </form>
+
+                    <?php if ($isSuperAdmin): ?>
+                    <span style="color:#cbd5e1;">&bull;</span>
+                    <form method="POST" action="admin.php?tab=events" style="margin:0;" onsubmit="return confirm('🚨 PERMANENT EVENT DELETION 🚨\n\nAre you sure you want to completely delete event \'<?= htmlspecialchars(addslashes($ev['event_name'])) ?>\'?\n\nThis will permanently delete:\n- The event itself\n- All sold & unsold squares\n- All audit logs & activity history\n- All associated webhook records\n\nThis action CANNOT be undone!');">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                        <input type="hidden" name="action" value="delete_event">
+                        <input type="hidden" name="event_db_id" value="<?= $evId ?>">
+                        <button type="submit" style="background:none; border:none; padding:2px 4px; font-size:0.8em; color:#dc2626; cursor:pointer; text-decoration:underline;">
+                            🗑️ Delete Event
+                        </button>
+                    </form>
+                    <?php endif; ?>
                 </div>
                 <?php endif; ?>
             </div>
@@ -215,9 +227,7 @@ if (!function_exists('formatPricingTiersForInput')) {
     </div>
 <?php endif; ?>
 
-<!-- ========================================== -->
-<!-- MODAL: EDIT EVENT DETAILS                  -->
-<!-- ========================================== -->
+<!-- MODAL: EDIT EVENT DETAILS -->
 <div id="editEventModal" class="modal-backdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:99999; align-items:center; justify-content:center;">
     <div class="modal-box" style="background:#fff; border-radius:12px; width:92%; max-width:540px; max-height:90vh; overflow-y:auto; padding:24px 28px; box-shadow:0 10px 30px rgba(0,0,0,0.4); font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:12px; margin-bottom:16px;">
@@ -282,9 +292,7 @@ if (!function_exists('formatPricingTiersForInput')) {
 </div>
 
 <?php if ($canCreate): ?>
-<!-- ========================================== -->
-<!-- MODAL: CREATE NEW EVENT                    -->
-<!-- ========================================== -->
+<!-- MODAL: CREATE NEW EVENT -->
 <div id="createEventModal" class="modal-backdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:99999; align-items:center; justify-content:center;">
     <div class="modal-box" style="background:#fff; border-radius:12px; width:92%; max-width:540px; max-height:90vh; overflow-y:auto; padding:24px 28px; box-shadow:0 10px 30px rgba(0,0,0,0.4); font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:12px; margin-bottom:16px;">
