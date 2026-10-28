@@ -2,10 +2,20 @@
 /**
  * Cow Pat Bingo - Field POS / Mobile & iPad Seller Interface with Mobile-Optimized Layout
  */
+if (session_status() === PHP_SESSION_NONE) {
+    ini_set('session.cookie_httponly', '1');
+    $isHttps = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on')
+            || (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https')
+            || (isset($_SERVER['HTTP_CF_VISITOR']) && strpos($_SERVER['HTTP_CF_VISITOR'], 'https') !== false);
+    ini_set('session.cookie_secure', $isHttps ? '1' : '0');
+    ini_set('session.cookie_samesite', 'Lax');
+    ini_set('session.use_strict_mode', '1');
+    session_start();
+}
+
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/includes/bingo_helpers.php';
 
-// 0. Session Keep-Alive Endpoint
 if (isset($_GET['ping'])) {
     header('Content-Type: application/json');
     echo json_encode(['status' => 'ok', 'time' => time()]);
@@ -23,7 +33,6 @@ $adminId = (int)$_SESSION['admin_id'];
 $adminName = $_SESSION['admin_name'] ?? 'Device';
 $isSuperAdmin = $_SESSION['is_super_admin'] ?? false;
 
-// Determine active event for this device
 if ($isSuperAdmin) {
     $evStmt = $db->query("SELECT * FROM cow_bingo_events WHERE is_active = 1 ORDER BY id DESC LIMIT 1");
     $event = $evStmt->fetch(PDO::FETCH_ASSOC);
@@ -45,6 +54,7 @@ if (!$event) {
 $eventId = (int)$event['id'];
 $hieventsId = $event['hievents_event_id'] ?? null;
 $allowCellSelection = isset($event['allow_cell_selection']) ? (int)$event['allow_cell_selection'] : 1;
+$cellNaming = $event['cell_naming'] ?? 'alpha';
 $lastAssigned = null;
 $errorMessage = '';
 
@@ -109,13 +119,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             $insertStmt = $db->prepare("
                 INSERT INTO cow_bingo_cells 
-                (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, order_amount, price_paid, payment_method, assigned_by) 
+                (event_id, ticket_id, order_id, buyer_name, buyer_email, cell_reference, is_paid, order_amount, price_paid, payment_method, assigned_by)
                 VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'cash', ?)
             ");
 
             $i = 1;
+            $colsForNorm = (int)$event['grid_cols'];
             foreach ($selectedCells as $cell) {
                 $ticketId = $batchId . '-' . $i++;
+                $canonCell = normalizeCellRef($cell, $colsForNorm);
                 try {
                     $insertStmt->execute([
                         $eventId, 
@@ -123,12 +135,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         $batchId, 
                         $buyerName, 
                         $buyerContact ?: null, 
-                        strtoupper($cell), 
+                        strtoupper($canonCell), 
                         $batchTotal, 
                         $pricePerSquare, 
                         $adminName
                     ]);
-                    $assignedList[] = strtoupper($cell);
+                    $assignedList[] = strtoupper($canonCell);
                 } catch (PDOException $e) {
                     $hasCollision = true;
                     break;
@@ -137,13 +149,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             if ($hasCollision) {
                 $db->rollBack();
-                $errorMessage = "⚠️ Square $cell was just taken by another seller! Please pick a different square.";
+                $errorMessage = "⚠️  Square $cell was just taken by another seller! Please pick a different square.";
             } else {
                 $db->commit();
-                $cellStr = implode(', ', $assignedList);
+                $gridCols = (int)$event['grid_cols'];
+                $cellStr = implode(', ', array_map(fn($c) => formatCellRef($c, $gridCols, $cellNaming), $assignedList));
                 logAuditEvent($db, $eventId, 'cell_assigned', $cellStr, $batchId, $batchId, $buyerName, $batchTotal, "POS Cash Sale ({$cellCount} sq): $cellStr", $adminName);
                 $lastAssigned = [
-                    'cells' => $assignedList,
+                    'cells' => array_map(fn($c) => formatCellRef($c, $gridCols, $cellNaming), $assignedList),
                     'name' => $buyerName,
                     'batch' => $batchId,
                     'total' => number_format($batchTotal, 2)
@@ -204,7 +217,6 @@ $csrfToken = getCsrfToken();
             transform: scale(1.08); z-index: 2; box-shadow: 0 0 8px rgba(255, 193, 7, 0.8);
         }
         
-        /* MOBILE OPTIMIZED QUICK BUTTONS (No horizontal scroll) */
         .quick-pick {
             display: flex;
             gap: 6px;
@@ -229,7 +241,6 @@ $csrfToken = getCsrfToken();
         .quick-btn:active { background: #ffc107; color: #000; }
         .quick-btn.btn-clear { background: #dc3545; border: none; flex: 0 1 auto; }
 
-        /* CHECKOUT TRAY */
         .checkout-tray {
             position: fixed; bottom: 0; left: 0; right: 0; background: #ffffff; color: #222;
             padding: 10px 14px 14px; box-shadow: 0 -4px 20px rgba(0,0,0,0.4); border-top-left-radius: 16px; border-top-right-radius: 16px; z-index: 100;
@@ -237,7 +248,6 @@ $csrfToken = getCsrfToken();
         .tray-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
         .tray-total { font-size: 1.3em; font-weight: 900; color: #2d5016; }
         
-        /* RESPONSIVE INPUTS FOR PHONES */
         .inputs-row {
             display: flex;
             gap: 8px;
@@ -295,7 +305,7 @@ $csrfToken = getCsrfToken();
 
 <?php if (!$allowCellSelection): ?>
     <div class="mode-banner">
-        🎲 <strong>Random Allocation Only Mode</strong> — Square tapping is disabled. Tap +1, +3, +5, or +10 below to assign tickets.
+        🎲 <strong>Random Allocation Only Mode</strong> â€” Square tapping is disabled. Tap +1, +3, +5, or +10 below to assign tickets.
     </div>
 <?php endif; ?>
 
@@ -330,12 +340,14 @@ $csrfToken = getCsrfToken();
             <div class="header-cell"><?= $r ?></div>
             <?php foreach ($colLetters as $c): 
                 $ref = $c . $r;
+                $displayRef = formatCellRef($ref, $gridCols, $cellNaming);
                 $isSold = isset($soldCells[$ref]);
             ?>
                 <div class="cell <?= $isSold ? 'sold' : 'available' ?>" 
                      data-cell="<?= $ref ?>" 
+                     data-display="<?= $displayRef ?>" 
                      onclick="<?= $allowCellSelection ? 'toggleCell(this)' : '' ?>">
-                    <?= $ref ?>
+                    <?= $displayRef ?>
                 </div>
             <?php endforeach; ?>
         <?php endfor; ?>
@@ -345,9 +357,11 @@ $csrfToken = getCsrfToken();
 <?php if (!empty($recentSales)): ?>
 <div class="recent-sales">
     <strong>Recent Sales on this device:</strong>
-    <?php foreach ($recentSales as $s): ?>
+    <?php foreach ($recentSales as $s): 
+        $disp = formatCellRef($s['cell_reference'], $gridCols, $cellNaming);
+    ?>
         <span style="background:rgba(255,255,255,0.15);padding:2px 8px;border-radius:10px;margin-right:5px;display:inline-block;margin-top:4px;">
-            <?= htmlspecialchars($s['cell_reference']) ?> (<?= htmlspecialchars($s['buyer_name']) ?>)
+            <?= htmlspecialchars($disp) ?> (<?= htmlspecialchars($s['buyer_name']) ?>)
         </span>
     <?php endforeach; ?>
 </div>
@@ -375,6 +389,8 @@ $csrfToken = getCsrfToken();
 <script>
     const pricingTiers = <?= json_encode($pricingTiers) ?>;
     const allowCellSelection = <?= $allowCellSelection ? 'true' : 'false' ?>;
+    const cellNaming = '<?= $cellNaming ?>';
+    const gridCols = <?= $gridCols ?>;
     let selected = new Set();
 
     setInterval(() => {
@@ -392,6 +408,18 @@ $csrfToken = getCsrfToken();
         btn.textContent = 'Recording Cash... ⏳';
         return true;
     });
+
+    function formatRef(ref) {
+        if (cellNaming !== 'numeric') return ref;
+        const m = ref.match(/^([A-Z]+)([0-9]+)$/);
+        if (!m) return ref;
+        let col = 0;
+        for (let i = 0; i < m[1].length; i++) {
+            col = col * 26 + (m[1].charCodeAt(i) - 64);
+        }
+        const row = parseInt(m[2], 10);
+        return ((row - 1) * gridCols) + col;
+    }
 
     function toggleCell(el) {
         if (!allowCellSelection) return;
@@ -450,7 +478,8 @@ $csrfToken = getCsrfToken();
         document.getElementById('selectedCellsInput').value = Array.from(selected).join(',');
         document.getElementById('calculatedTotalInput').value = total;
         document.getElementById('totalDisplay').textContent = '$' + total;
-        document.getElementById('selectedSummary').textContent = `${qty} sq (${Array.from(selected).join(', ') || 'None'})`;
+        const displayList = Array.from(selected).map(formatRef);
+        document.getElementById('selectedSummary').textContent = `${qty} sq (${displayList.join(', ') || 'None'})`;
         document.getElementById('submitBtn').disabled = (qty === 0);
     }
 </script>

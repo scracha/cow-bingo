@@ -100,6 +100,8 @@ if (!function_exists('formatPricingTiersForInput')) {
                 'venue' => $ev['event_venue'] ?? '',
                 'start' => $isoStart,
                 'description' => $ev['event_description'] ?? '',
+                'payment_instructions' => $ev['payment_instructions'] ?? '',
+                'event_prizes_input' => formatEventPrizesForInput($ev['event_prizes'] ?? ''),
                 'cell_naming' => $cellNamingVal,
                 'pricing_tiers' => $inputTiers,
                 'allow_cell_selection' => (int)($ev['allow_cell_selection'] ?? 0),
@@ -115,13 +117,13 @@ if (!function_exists('formatPricingTiersForInput')) {
                             <span style="font-size:0.75em; font-weight:bold; padding:3px 8px; border-radius:12px; background:#2d5016; color:#fff;">★ SELECTED</span>
                         <?php endif; ?>
                         <span style="font-size:0.75em; font-weight:bold; padding:3px 8px; border-radius:12px; background:<?= !empty($ev['is_active']) ? '#dcfce7; color:#15803d;' : '#f1f5f9; color:#64748b;' ?>">
-                            <?= !empty($ev['is_active']) ? '● ACTIVE' : '○ DEACTIVATED' ?>
+                            <?= !empty($ev['is_active']) ? '—  ACTIVE' : '—‹ DEACTIVATED' ?>
                         </span>
                     </div>
                 </div>
 
                 <p style="font-size:0.85em; color:#718096; margin-bottom:12px;">
-                    📅 <?= htmlspecialchars($startDateFmt) ?><br>
+                    📍 … <?= htmlspecialchars($startDateFmt) ?><br>
                     <?php if (!empty($ev['event_venue'])): ?>📍 <?= htmlspecialchars($ev['event_venue']) ?><br><?php endif; ?>
                     🔢 Grid: <?= (int)$ev['grid_cols'] ?> &times; <?= (int)$ev['grid_rows'] ?> (<?= $totalCells ?> squares &bull; <?= $cellNamingVal === 'numeric' ? '1, 2, 3' : 'A1, B2' ?>)
                 </p>
@@ -136,7 +138,19 @@ if (!function_exists('formatPricingTiersForInput')) {
                 <?php endif; ?>
 
                 <div style="font-size:0.82em; color:#4b5563; margin-bottom:12px; line-height:1.6;">
-                    <div><strong>🎟️ Pricing:</strong> <?= htmlspecialchars($displayTiers) ?></div>
+                    <div><strong>🎟️  Pricing:</strong> <?= htmlspecialchars($displayTiers) ?></div>
+                    <?php 
+                    $cardPrizes = parseEventPrizes($ev['event_prizes'] ?? '');
+                    if (!empty($cardPrizes)): ?>
+                        <div style="margin-top:2px;">
+                            <strong>🏆 Prizes:</strong> 
+                            <?php 
+                            $pStrs = array_map(fn($p) => htmlspecialchars($p['rank'] . ': ' . $p['prize']), array_slice($cardPrizes, 0, 3));
+                            echo implode(' &bull; ', $pStrs);
+                            if (count($cardPrizes) > 3) echo ' <em>(+' . (count($cardPrizes) - 3) . ' more)</em>';
+                            ?>
+                        </div>
+                    <?php endif; ?>
                     <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:4px;">
                         <strong>🔗 Hi.Events:</strong>
                         <?php if ($isLinked): ?>
@@ -175,7 +189,7 @@ if (!function_exists('formatPricingTiersForInput')) {
                     <a href="grid.php?id=<?= $evId ?>" target="_blank" style="flex:0.9; text-align:center; background:#f8fafc; color:#334155; border:1px solid #cbd5e1; padding:7px 8px; border-radius:6px; text-decoration:none; font-weight:bold; font-size:0.82em;">🌐 View Grid</a>
                     <a href="admin.php?tab=cells&view=<?= $evId ?>" style="flex:0.9; text-align:center; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; padding:7px 8px; border-radius:6px; text-decoration:none; font-weight:bold; font-size:0.82em;">🎲 Cells</a>
                     <?php if ($canManage): ?>
-                        <button type="button" class="btn-edit-event" data-event="<?= $eventDataJson ?>" style="flex:0.7; background:#f8fafc; border:1px solid #cbd5e1; color:#334155; padding:7px 8px; border-radius:6px; font-weight:bold; font-size:0.82em; cursor:pointer;">✏️ Edit</button>
+                        <button type="button" class="btn-edit-event" data-event="<?= $eventDataJson ?>" style="flex:0.7; background:#f8fafc; border:1px solid #cbd5e1; color:#334155; padding:7px 8px; border-radius:6px; font-weight:bold; font-size:0.82em; cursor:pointer;">✏️ï¸  Edit</button>
                     <?php endif; ?>
                 </div>
 
@@ -215,7 +229,7 @@ if (!function_exists('formatPricingTiersForInput')) {
                         <input type="hidden" name="action" value="delete_event">
                         <input type="hidden" name="event_db_id" value="<?= $evId ?>">
                         <button type="submit" style="background:none; border:none; padding:2px 4px; font-size:0.8em; color:#dc2626; cursor:pointer; text-decoration:underline;">
-                            🗑️ Delete Event
+                            🗑️  Delete Event
                         </button>
                     </form>
                     <?php endif; ?>
@@ -231,7 +245,7 @@ if (!function_exists('formatPricingTiersForInput')) {
 <div id="editEventModal" class="modal-backdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:99999; align-items:center; justify-content:center;">
     <div class="modal-box" style="background:#fff; border-radius:12px; width:92%; max-width:540px; max-height:90vh; overflow-y:auto; padding:24px 28px; box-shadow:0 10px 30px rgba(0,0,0,0.4); font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:12px; margin-bottom:16px;">
-            <h3 style="margin:0; font-size:1.3em; color:#2d5016;">✏️ Edit Event Details</h3>
+            <h3 style="margin:0; font-size:1.3em; color:#2d5016;">✏️ï¸  Edit Event Details</h3>
             <button type="button" onclick="closeEditEventModal()" style="background:none; border:none; font-size:1.5em; cursor:pointer; color:#718096;">&times;</button>
         </div>
 
@@ -258,7 +272,19 @@ if (!function_exists('formatPricingTiersForInput')) {
 
             <div style="margin-bottom:14px;">
                 <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">Event Description &amp; Public Notes</label>
-                <textarea name="event_description" id="edit_event_description" rows="4" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit; line-height:1.4;"></textarea>
+                <textarea name="event_description" id="edit_event_description" rows="3" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit; line-height:1.4;"></textarea>
+            </div>
+
+            <div style="margin-bottom:14px;">
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">💳 Payment Instructions (for Offline / Bank Transfer games)</label>
+                <textarea name="payment_instructions" id="edit_event_payment_instructions" rows="3" placeholder="e.g. Bank: BNZ 02-1234-5678901-00&#10;Account Name: St Patrick's Gala&#10;Reference: Use your Order Reference &amp; Name" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit; line-height:1.4;"></textarea>
+                <small style="color:#64748b; font-size:0.8em;">Displayed to online buyers on grid.php when reserving tickets for non-Hi.Events events.</small>
+            </div>
+
+            <div style="margin-bottom:14px;">
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">🏆 Pre-Allocated Prizes (1st, 2nd, 3rd...)</label>
+                <textarea name="event_prizes" id="edit_event_prizes" rows="3" placeholder="1st Prize: $500 Cash&#10;2nd Prize: $250 Grocery Hamper&#10;3rd Prize: $100 Fuel Card" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit; line-height:1.4;"></textarea>
+                <small style="color:#64748b; font-size:0.8em;">One per line (Rank: Prize). Pre-allocated prizes will be displayed on the public grid.</small>
             </div>
 
             <div style="margin-bottom:14px;">
@@ -326,8 +352,20 @@ if (!function_exists('formatPricingTiersForInput')) {
             </div>
 
             <div style="margin-bottom:14px;">
-                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">Description &amp; Payment Details</label>
-                <textarea name="event_description" rows="3" placeholder="Location, map link, bank transfer instructions..." style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit;"></textarea>
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">Description &amp; Public Notes</label>
+                <textarea name="event_description" rows="2" placeholder="Location, map link, gala information..." style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit;"></textarea>
+            </div>
+
+            <div style="margin-bottom:14px;">
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">💳 Payment Instructions (for Offline / Bank Transfer games)</label>
+                <textarea name="payment_instructions" rows="3" placeholder="e.g. Bank: BNZ 02-1234-5678901-00&#10;Account Name: St Patrick's Gala&#10;Reference: Use your Order Reference &amp; Name" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit;"></textarea>
+                <small style="color:#64748b; font-size:0.8em;">Displayed to online buyers on grid.php when reserving tickets for non-Hi.Events events.</small>
+            </div>
+
+            <div style="margin-bottom:14px;">
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">🏆 Pre-Allocated Prizes (1st, 2nd, 3rd...)</label>
+                <textarea name="event_prizes" rows="3" placeholder="1st Prize: $500 Cash&#10;2nd Prize: $250 Grocery Hamper&#10;3rd Prize: $100 Fuel Card" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit;"></textarea>
+                <small style="color:#64748b; font-size:0.8em;">One per line (Rank: Prize). Pre-allocated prizes will be displayed on the public grid.</small>
             </div>
 
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:14px;">
@@ -396,6 +434,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 document.getElementById('edit_event_start').value = ev.start || '';
                 document.getElementById('edit_event_description').value = ev.description || '';
                 document.getElementById('edit_pricing_tiers').value = ev.pricing_tiers || '';
+                document.getElementById('edit_event_payment_instructions').value = ev.payment_instructions || '';
+                document.getElementById('edit_event_prizes').value = ev.event_prizes_input || '';
                 
                 const namingSelect = document.getElementById('edit_cell_naming');
                 if (namingSelect) namingSelect.value = ev.cell_naming || 'alpha';

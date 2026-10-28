@@ -14,10 +14,13 @@ CREATE TABLE IF NOT EXISTS cow_bingo_events (
     event_start DATETIME DEFAULT NULL,               -- event start date/time
     event_venue VARCHAR(255) DEFAULT NULL,            -- venue name
     event_description TEXT DEFAULT NULL,              -- location, maps, bank payment details
+    payment_instructions TEXT DEFAULT NULL,           -- Bank transfer / offline payment details
     grid_cols INT NOT NULL DEFAULT 16,
     grid_rows INT NOT NULL DEFAULT 16,
     pricing_tiers TEXT DEFAULT NULL,                  -- JSON string of {qty: price} tiers
+    event_prizes TEXT DEFAULT NULL,                   -- JSON string of pre-allocated prizes
     allow_cell_selection TINYINT(1) NOT NULL DEFAULT 1,
+    cell_naming VARCHAR(20) NOT NULL DEFAULT 'alpha', -- 'alpha' or 'numeric'
     is_active TINYINT(1) DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
@@ -30,6 +33,7 @@ CREATE TABLE IF NOT EXISTS cow_bingo_cells (
     order_id VARCHAR(100) DEFAULT NULL,
     buyer_name VARCHAR(255) NOT NULL,
     buyer_email VARCHAR(255) DEFAULT NULL,
+    buyer_phone VARCHAR(50) DEFAULT NULL,
     cell_reference VARCHAR(5) NOT NULL,             -- e.g. 'C13'
     is_paid TINYINT(1) NOT NULL DEFAULT 1,
     order_amount DECIMAL(10,2) DEFAULT NULL,         -- Total transaction/batch amount
@@ -72,6 +76,7 @@ VALUES ('admin', '$2y$10$placeholder', 'Super Admin', 'super_admin', 1);
 CREATE TABLE IF NOT EXISTS cow_bingo_login_attempts (
     id INT AUTO_INCREMENT PRIMARY KEY,
     ip_address VARCHAR(45) NOT NULL,
+    username VARCHAR(100) DEFAULT NULL,
     attempted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_ip_time (ip_address, attempted_at)
 ) ENGINE=InnoDB;
@@ -94,15 +99,14 @@ CREATE TABLE IF NOT EXISTS cow_bingo_audit_log (
 ) ENGINE=InnoDB;
 
 -- Log table to capture raw webhook payloads for debugging
-
 CREATE TABLE IF NOT EXISTS webhook_log (
     id INT AUTO_INCREMENT PRIMARY KEY,
     hievents_event_id VARCHAR(100) DEFAULT NULL,
     payload TEXT NOT NULL,
-    ip_address VARCHAR(45) DEFAULT NULL,       -- NEW
+    ip_address VARCHAR(45) DEFAULT NULL,
     event_type VARCHAR(100) DEFAULT NULL,
     processed TINYINT(1) DEFAULT 0,
     error_message TEXT DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_webhook_ip_time (ip_address, created_at)   -- NEW
+    INDEX idx_webhook_ip_time (ip_address, created_at)
 ) ENGINE=InnoDB;

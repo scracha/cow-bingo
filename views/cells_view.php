@@ -82,22 +82,46 @@ $displayCells = array_filter($cells, function($c) use ($filterStatus) {
             <input type="hidden" name="action" value="assign_prize_by_ref">
             <input type="hidden" name="event_db_id" value="<?= $evId ?>">
             <input type="text" name="cell_reference" placeholder="Square (e.g. <?= $cellNaming === 'numeric' ? '16' : 'D4' ?>)" required style="width:115px; padding:6px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.85em;">
-            <input type="text" name="prize" placeholder="Prize (e.g. 1st Place)" required style="width:150px; padding:6px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.85em;">
+            <input type="text" name="prize" list="preallocated_prizes_list" id="quick_prize_input" placeholder="Prize (e.g. 1st Place)" required style="width:170px; padding:6px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.85em;">
+            <datalist id="preallocated_prizes_list">
+                <?php 
+                $cellEvPrizes = parseEventPrizes($viewEvent['event_prizes'] ?? '');
+                foreach ($cellEvPrizes as $ep): ?>
+                    <option value="<?= htmlspecialchars($ep['rank'] . ': ' . $ep['prize']) ?>"><?= htmlspecialchars($ep['rank'] . ': ' . $ep['prize']) ?></option>
+                <?php endforeach; ?>
+            </datalist>
             <button type="submit" class="primary" style="padding:6px 12px; font-size:0.85em;">🏆 Award Prize</button>
         </form>
         <?php endif; ?>
     </div>
 
+    <?php 
+    $prePrizes = parseEventPrizes($viewEvent['event_prizes'] ?? '');
+    if (!empty($prePrizes)): ?>
+    <div style="background:#fffdf5; border:1.5px solid #fde047; border-radius:10px; padding:12px 18px; margin-bottom:16px; box-shadow:0 1px 4px rgba(0,0,0,0.05);">
+        <strong style="color:#854d0e; font-size:0.9em; display:flex; align-items:center; gap:6px;">
+            <span>🏆</span> Pre-Allocated Prizes for this Game:
+        </strong>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:8px;">
+            <?php foreach ($prePrizes as $pp): ?>
+                <button type="button" data-prize="<?= htmlspecialchars($pp['rank'] . ': ' . $pp['prize']) ?>" onclick="document.getElementById('quick_prize_input').value=this.dataset.prize" style="background:#fff; border:1px solid #fde047; border-radius:6px; padding:4px 10px; font-size:0.82em; color:#713f12; cursor:pointer;" title="Click to fill prize input">
+                    <strong><?= htmlspecialchars($pp['rank']) ?>:</strong> <?= htmlspecialchars($pp['prize']) ?>
+                </button>
+            <?php endforeach; ?>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- Manual Assignment Control Box -->
     <?php if ($canManage): ?>
     <div style="background:#fff; border-radius:10px; padding:18px 22px; box-shadow:0 1px 4px rgba(0,0,0,0.06); margin-bottom:18px; border:1.5px solid #e2e8f0;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-            <strong style="color:#2d5016; font-size:0.95em;">✍️ Manual Square Assignment &bull; Click available squares below or use Quick Random:</strong>
+            <strong style="color:#2d5016; font-size:0.95em;">✏️ï¸  Manual Square Assignment &bull; Click available squares below or use Quick Random:</strong>
             <div style="display:inline-flex; gap:6px; align-items:center;">
                 <button type="button" onclick="adminAddRandom(1)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+1 Random</button>
                 <button type="button" onclick="adminAddRandom(3)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+3 Random</button>
                 <button type="button" onclick="adminAddRandom(5)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+5 Random</button>
-                <button type="button" onclick="adminClearSelection()" class="btn btn-sm danger" style="font-size:0.8em; padding:4px 8px;">✕ Clear</button>
+                <button type="button" onclick="adminClearSelection()" class="btn btn-sm danger" style="font-size:0.8em; padding:4px 8px;">✏️• Clear</button>
             </div>
         </div>
 
@@ -340,7 +364,7 @@ function adminUpdateSelectionUI() {
                 💵 Paid (<?= $paidCount ?>)
             </a>
             <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=unpaid&sort=<?= urlencode($sortBy) ?>" style="padding:4px 12px; border-radius:14px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $filterStatus === 'unpaid' ? 'background:#dc2626; color:#fff;' : 'background:#f1f5f9; color:#475569; border:1px solid #cbd5e1;' ?>">
-                ⚠️ Unpaid (<?= $unpaidCount ?>)
+                ⚠️  Unpaid (<?= $unpaidCount ?>)
             </a>
         </div>
 
@@ -358,18 +382,18 @@ function adminUpdateSelectionUI() {
             </a>
 
             <!-- Download CSV -->
-            <a href="admin.php?action=export_csv&event_db_id=<?= $evId ?>" class="btn btn-sm" style="background:#f0fdf4; border-color:#bbf7d0; color:#166534; font-size:0.8em; padding:5px 10px;">
-                📥 Export CSV
-            </a>
+			<a href="admin.php?action=export_csv&event_db_id=<?= $evId ?>&amp;csrf_token=<?= urlencode($csrfToken) ?>" class="btn btn-sm" style="background:#f0fdf4; border-color:#bbf7d0; color:#166534; font-size:0.8em; padding:5px 10px;">
+				📥 Export CSV
+			</a>
 
             <!-- Remove All Unpaid Squares Button -->
             <?php if ($canManage && $unpaidCount > 0): ?>
-            <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('⚠️ REMOVE ALL UNPAID SQUARES ⚠️\n\nAre you sure you want to release all <?= $unpaidCount ?> unpaid squares for this event?\n\nAll unpaid reservations will be removed and returned to the available paddock pool.\n\nThis action cannot be undone.');">
+            <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('⚠️  REMOVE ALL UNPAID SQUARES ⚠️ \n\nAre you sure you want to release all <?= $unpaidCount ?> unpaid squares for this event?\n\nAll unpaid reservations will be removed and returned to the available paddock pool.\n\nThis action cannot be undone.');">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                 <input type="hidden" name="action" value="delete_all_unpaid">
                 <input type="hidden" name="event_db_id" value="<?= $evId ?>">
                 <button type="submit" class="danger btn-sm" style="font-size:0.8em; padding:5px 10px;">
-                    🗑️ Remove All Unpaid (<?= $unpaidCount ?>)
+                    🗑️  Remove All Unpaid (<?= $unpaidCount ?>)
                 </button>
             </form>
             <?php endif; ?>
@@ -428,7 +452,7 @@ function adminUpdateSelectionUI() {
                                 </span>
                             <?php else: ?>
                                 <span style="display:inline-block; font-size:0.8em; font-weight:bold; padding:2px 8px; border-radius:10px; background:#fef2f2; color:#dc2626; border:1px solid #fecaca;">
-                                    ⚠️ Unpaid <?= $daysOld > 0 ? '(' . $daysOld . 'd old)' : '(today)' ?>
+                                    ⚠️  Unpaid <?= $daysOld > 0 ? '(' . $daysOld . 'd old)' : '(today)' ?>
                                 </span>
                             <?php endif; ?>
                         </td>
@@ -447,7 +471,7 @@ function adminUpdateSelectionUI() {
                                         <input type="hidden" name="action" value="assign_prize">
                                         <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
                                         <input type="hidden" name="prize" value="">
-                                        <button type="submit" title="Remove Prize" style="background:none; border:none; color:#dc2626; font-size:0.85em; padding:0 2px; cursor:pointer;">🏆✖</button>
+                                        <button type="submit" title="Remove Prize" style="background:none; border:none; color:#dc2626; font-size:0.85em; padding:0 2px; cursor:pointer;">🏆✏️–</button>
                                     </form>
                                     <?php endif; ?>
                                 </div>
@@ -480,7 +504,7 @@ function adminUpdateSelectionUI() {
                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                                     <input type="hidden" name="action" value="delete_cell">
                                     <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
-                                    <button type="submit" class="btn-sm" style="font-size:0.75em; padding:3px 8px; color:#dc2626;">✕ Remove</button>
+                                    <button type="submit" class="btn-sm" style="font-size:0.75em; padding:3px 8px; color:#dc2626;">✏️• Remove</button>
                                 </form>
                             </div>
                         </td>

@@ -88,7 +88,7 @@ $webhookRows = $webhookStmt ? $webhookStmt->fetchAll(PDO::FETCH_ASSOC) : [];
         📋 All Activity (<?= count($auditRows) ?>)
     </button>
     <button type="button" class="audit-pill" data-cat="squares" onclick="setAuditCategory('squares', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #cbd5e1; background:#fff; color:#334155; font-size:0.85em; font-weight:bold; cursor:pointer;">
-        🎟️ Squares
+        🎟️  Squares
     </button>
     <button type="button" class="audit-pill" data-cat="payments" onclick="setAuditCategory('payments', this)" style="display:inline-flex; align-items:center; gap:6px; padding:8px 14px; border-radius:20px; border:1px solid #cbd5e1; background:#fff; color:#334155; font-size:0.85em; font-weight:bold; cursor:pointer;">
         💵 Payments
@@ -108,7 +108,7 @@ $webhookRows = $webhookStmt ? $webhookStmt->fetchAll(PDO::FETCH_ASSOC) : [];
 <div id="auditTableContainer" style="background:#fff; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.08); overflow-x:auto;">
     <?php if (empty($auditRows)): ?>
         <div style="padding:40px; text-align:center; color:#64748b;">
-            <p style="font-size:1.1em; margin-bottom:4px;">📭 No audit records found for <?= htmlspecialchars($currentEventName) ?>.</p>
+            <p style="font-size:1.1em; margin-bottom:4px;">📍 ­ No audit records found for <?= htmlspecialchars($currentEventName) ?>.</p>
             <small>Actions taken on squares, payments, or game settings will log here automatically.</small>
         </div>
     <?php else: ?>
@@ -187,7 +187,7 @@ $webhookRows = $webhookStmt ? $webhookStmt->fetchAll(PDO::FETCH_ASSOC) : [];
             <?php if ($selectedEventId > 0 && !empty($currentHiEventsId)):
                 echo "Filtered strictly for <strong>" . htmlspecialchars($currentEventName) . "</strong> (Hi.Events ID: " . htmlspecialchars($currentHiEventsId) . ")";
             elseif ($selectedEventId > 0 && empty($currentHiEventsId)):
-                echo "ℹ️ <strong>" . htmlspecialchars($currentEventName) . "</strong> is an Offline / Standalone event with no linked Hi.Events ID.";
+                echo "ℹ️  <strong>" . htmlspecialchars($currentEventName) . "</strong> is an Offline / Standalone event with no linked Hi.Events ID.";
             else:
                 echo "Showing webhooks across all events.";
             endif; ?>
@@ -226,7 +226,13 @@ $webhookRows = $webhookStmt ? $webhookStmt->fetchAll(PDO::FETCH_ASSOC) : [];
                         <?= htmlspecialchars($w['ip_address'] ?? '-') ?>
                     </td>
                     <td style="padding:10px 14px; color:#475569; font-family:monospace; font-size:0.8em;">
-                        <?= htmlspecialchars(mb_strimwidth($w['payload'] ?? '', 0, 95, '...')) ?>
+                        <?php 
+                        $rawPayloadStr = $w['payload'] ?? '';
+                        $previewStr = function_exists('mb_strimwidth') 
+                            ? mb_strimwidth($rawPayloadStr, 0, 95, '...') 
+                            : (strlen($rawPayloadStr) > 95 ? substr($rawPayloadStr, 0, 92) . '...' : $rawPayloadStr);
+                        echo htmlspecialchars($previewStr);
+                        ?>
                     </td>
                 </tr>
                 <?php endforeach; ?>

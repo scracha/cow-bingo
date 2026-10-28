@@ -7,28 +7,39 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 /**
- * Convert Alpha cell reference (e.g. 'D2', 'G4') to Numeric (e.g. 16, 43)
+ * Convert Alpha cell reference (e.g. 'D2', 'G4', 'AA1') to Numeric (e.g. 16, 43)
  * Row-major order: (row - 1) * cols + col
  */
 function cellAlphaToNum(string $alphaRef, int $cols): int {
     $alphaRef = strtoupper(trim($alphaRef));
-    if (!preg_match('/^([A-Z])([0-9]+)$/', $alphaRef, $m)) {
+    if (!preg_match('/^([A-Z]+)([0-9]+)$/', $alphaRef, $m)) {
         return is_numeric($alphaRef) ? (int)$alphaRef : 0;
     }
-    $col = ord($m[1]) - 64;
+    $colLetters = $m[1];
+    $col = 0;
+    for ($i = 0; $i < strlen($colLetters); $i++) {
+        $col = $col * 26 + (ord($colLetters[$i]) - 64);
+    }
     $row = (int)$m[2];
     return (($row - 1) * $cols) + $col;
 }
 
 /**
- * Convert Numeric cell index (e.g. 16, 43) to Alpha reference (e.g. 'D2', 'G4')
+ * Convert Numeric cell index (e.g. 16, 43, 27) to Alpha reference (e.g. 'D2', 'G4', 'AA1')
  */
 function cellNumToAlpha(int $num, int $cols): string {
     if ($num <= 0 || $cols <= 0) return '';
     $row = (int) floor(($num - 1) / $cols) + 1;
     $col = (($num - 1) % $cols) + 1;
-    $colLetter = chr(64 + $col);
-    return $colLetter . $row;
+    
+    $colLetters = '';
+    $tempCol = $col;
+    while ($tempCol > 0) {
+        $rem = ($tempCol - 1) % 26;
+        $colLetters = chr(65 + $rem) . $colLetters;
+        $tempCol = (int) floor(($tempCol - $rem - 1) / 26);
+    }
+    return $colLetters . $row;
 }
 
 /**
@@ -129,12 +140,22 @@ function verifyCsrfToken(?string $token): bool {
 }
 
 /**
- * Generates all cell coordinates for a grid (e.g. ['A1', 'A2', ... 'P16'])
+ * Generates all cell coordinates for a grid supporting >26 columns (e.g. ['A1', 'B1', ... 'AA1', ...])
  */
 function generateGridCellReferences(int $cols, int $rows): array {
-    $colLetters = array_slice(range('A', 'Z'), 0, $cols);
+    $colLabels = [];
+    for ($c = 1; $c <= $cols; $c++) {
+        $letters = '';
+        $temp = $c;
+        while ($temp > 0) {
+            $rem = ($temp - 1) % 26;
+            $letters = chr(65 + $rem) . $letters;
+            $temp = (int) floor(($temp - $rem - 1) / 26);
+        }
+        $colLabels[] = $letters;
+    }
     $all = [];
-    foreach ($colLetters as $col) {
+    foreach ($colLabels as $col) {
         for ($row = 1; $row <= $rows; $row++) {
             $all[] = $col . $row;
         }
@@ -435,4 +456,88 @@ function exportEventBookingsCsv(PDO $db, int $eventId, string $eventName, array 
     }
     fclose($out);
     exit;
+}
+
+/**
+ * Validate New Zealand phone number (Mobile, Landline, or Freephone)
+ */
+function validateNzPhone(string $phone): bool {
+    $cleaned = preg_replace('/[\s\-\(\)\.]+/', '', $phone);
+    if (str_starts_with($cleaned, '+64')) {
+        $cleaned = '0' . substr($cleaned, 3);
+    } elseif (str_starts_with($cleaned, '0064')) {
+        $cleaned = '0' . substr($cleaned, 4);
+    } elseif (str_starts_with($cleaned, '64') && strlen($cleaned) >= 10) {
+        $cleaned = '0' . substr($cleaned, 2);
+    }
+    return (bool)preg_match('/^(02[012789][0-9]{6,8}|0[34679][0-9]{7}|0[58]0[08][0-9]{5,7})$/', $cleaned);
+}
+
+/**
+ * Normalize New Zealand phone number into standard 0XXXXXXXXX format
+ */
+function normalizeNzPhone(string $phone): string {
+    $cleaned = preg_replace('/[\s\-\(\)\.]+/', '', $phone);
+    if (str_starts_with($cleaned, '+64')) {
+        $cleaned = '0' . substr($cleaned, 3);
+    } elseif (str_starts_with($cleaned, '0064')) {
+        $cleaned = '0' . substr($cleaned, 4);
+    } elseif (str_starts_with($cleaned, '64') && strlen($cleaned) >= 10) {
+        $cleaned = '0' . substr($cleaned, 2);
+    }
+    return $cleaned;
+}
+
+/**
+ * Parse pre-allocated event prizes from JSON or text lines into a structured array
+ */
+function parseEventPrizes($raw): array {
+    if (empty($raw)) return [];
+    if (is_array($raw)) return $raw;
+    $raw = trim((string)$raw);
+    if (str_starts_with($raw, '[') || str_starts_with($raw, '{')) {
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded)) {
+            if (isset($decoded[0]['rank']) || isset($decoded[0]['prize'])) {
+                return $decoded;
+            }
+            $out = [];
+            foreach ($decoded as $k => $v) {
+                $out[] = ['rank' => (string)$k, 'prize' => (string)$v];
+            }
+            return $out;
+        }
+    }
+    $lines = preg_split('/[\r\n]+/', $raw);
+    if (count($lines) === 1 && strpos($lines[0], ',') !== false && strpos($lines[0], ':') !== false) {
+        $lines = explode(',', $lines[0]);
+    }
+    $prizes = [];
+    $idx = 1;
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '') continue;
+        if (strpos($line, ':') !== false) {
+            [$rank, $prize] = explode(':', $line, 2);
+            $prizes[] = ['rank' => trim($rank), 'prize' => trim($prize)];
+        } else {
+            $suffix = match($idx) { 1 => 'st', 2 => 'nd', 3 => 'rd', default => 'th' };
+            $prizes[] = ['rank' => "{$idx}{$suffix} Prize", 'prize' => $line];
+        }
+        $idx++;
+    }
+    return $prizes;
+}
+
+/**
+ * Format pre-allocated prizes for textarea input (Rank: Prize)
+ */
+function formatEventPrizesForInput($raw): string {
+    $prizes = parseEventPrizes($raw);
+    if (empty($prizes)) return '';
+    $lines = [];
+    foreach ($prizes as $p) {
+        $lines[] = ($p['rank'] ?? '') . ': ' . ($p['prize'] ?? '');
+    }
+    return implode("\n", $lines);
 }
