@@ -7,6 +7,57 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 /**
+ * Formats rich text safely for display:
+ * - XSS-sanitized with htmlspecialchars
+ * - Supports bold (**text**, __text__, <b>text</b>, <strong>text</strong>)
+ * - Supports italics (*text*, _text_, <i>text</i>, <em>text</em>)
+ * - Supports underline (<u>text</u>)
+ * - Automatically turns URLs into clickable links
+ * - Preserves line breaks
+ */
+function formatRichText(?string $text): string {
+    if ($text === null || $text === '') {
+        return '';
+    }
+
+    // 1. HTML-escape raw text for security
+    $safe = htmlspecialchars($text, ENT_QUOTES, 'UTF-8');
+
+    // 2. Allow whitelisted basic styling tags that were escaped
+    $allowed = [
+        '&lt;b&gt;'       => '<b>',
+        '&lt;/b&gt;'      => '</b>',
+        '&lt;strong&gt;'  => '<strong>',
+        '&lt;/strong&gt;' => '</strong>',
+        '&lt;i&gt;'       => '<i>',
+        '&lt;/i&gt;'      => '</i>',
+        '&lt;em&gt;'      => '<em>',
+        '&lt;/em&gt;'     => '</em>',
+        '&lt;u&gt;'       => '<u>',
+        '&lt;/u&gt;'      => '</u>',
+    ];
+    $safe = str_ireplace(array_keys($allowed), array_values($allowed), $safe);
+
+    // 3. Markdown Bold (**bold** or __bold__)
+    $safe = preg_replace('/\*\*(.+?)\*\*/s', '<strong>$1</strong>', $safe);
+    $safe = preg_replace('/__(.+?)__/s', '<strong>$1</strong>', $safe);
+
+    // 4. Markdown Italics (*italic* or _italic_)
+    $safe = preg_replace('/(?<!\*)\*(?!\*)([^\*\n]+?)(?<!\*)\*(?!\*)/', '<em>$1</em>', $safe);
+    $safe = preg_replace('/(?<!\w)_([^_\n]+?)_(?!\w)/', '<em>$1</em>', $safe);
+
+    // 5. Make URLs clickable
+    $safe = preg_replace(
+        '/(https?:\/\/[^\s<]+)/i',
+        '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>',
+        $safe
+    );
+
+    // 6. Convert newlines
+    return nl2br($safe);
+}
+
+/**
  * Convert Alpha cell reference (e.g. 'D2', 'G4', 'AA1') to Numeric (e.g. 16, 43)
  * Row-major order: (row - 1) * cols + col
  */

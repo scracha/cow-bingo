@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS cow_bingo_events (
     event_start DATETIME DEFAULT NULL,               -- event start date/time
     event_venue VARCHAR(255) DEFAULT NULL,            -- venue name
     event_description TEXT DEFAULT NULL,              -- location, maps, bank payment details
+    event_image VARCHAR(255) DEFAULT NULL,            -- uploaded event image / poster path
     payment_instructions TEXT DEFAULT NULL,           -- Bank transfer / offline payment details
     grid_cols INT NOT NULL DEFAULT 16,
     grid_rows INT NOT NULL DEFAULT 16,
@@ -22,6 +23,7 @@ CREATE TABLE IF NOT EXISTS cow_bingo_events (
     allow_cell_selection TINYINT(1) NOT NULL DEFAULT 1,
     cell_naming VARCHAR(20) NOT NULL DEFAULT 'alpha', -- 'alpha' or 'numeric'
     is_active TINYINT(1) DEFAULT 1,
+    entries_closed TINYINT(1) NOT NULL DEFAULT 0,     -- 1 = entries closed, no new ticket purchases
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
 
@@ -38,7 +40,7 @@ CREATE TABLE IF NOT EXISTS cow_bingo_cells (
     is_paid TINYINT(1) NOT NULL DEFAULT 1,
     order_amount DECIMAL(10,2) DEFAULT NULL,         -- Total transaction/batch amount
     price_paid DECIMAL(10,2) DEFAULT NULL,           -- Allocated amount for this square
-    payment_method VARCHAR(50) DEFAULT 'cash',       -- 'cash', 'online', 'manual'
+    payment_method VARCHAR(50) DEFAULT 'cash',       -- 'cash', 'online', 'manual', 'bank_transfer'
     assigned_by VARCHAR(100) NULL DEFAULT 'hi.events', -- 'hi.events', admin name, or iPad label
     prize VARCHAR(255) DEFAULT NULL,                -- e.g. '1st Prize', 'Free Cake'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

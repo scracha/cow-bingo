@@ -6,7 +6,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <title><?= htmlspecialchars(SITE_TITLE) ?> - Events</title>
+    <title><?= htmlspecialchars(defined('SITE_TITLE') ? SITE_TITLE : 'Cow Pat Bingo') ?> - Events</title>
     <style>
         body {
             font-family: -apple-system, sans-serif;
@@ -14,7 +14,16 @@
             min-height: 100vh; padding: 40px; color: #333; margin: 0;
         }
         .container { max-width: 700px; margin: 0 auto; }
-        h1 { color: white; text-align: center; margin-bottom: 30px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
         .event-card {
             background: white; border-radius: 8px; padding: 20px; margin-bottom: 15px;
             box-shadow: 0 2px 8px rgba(0,0,0,0.15); display: flex;
@@ -32,9 +41,13 @@
 </head>
 <body>
 <div class="container">
-    <h1>🐄 Cow Bingo</h1>
+    <h1>
+        <span>🐮</span>
+        <img src="cow_poo_2.svg" alt="cow poo bingo" style="height:1.2em; width:auto; vertical-align:middle;">
+        <span>Cow Pat Bingo</span>
+    </h1>
     <?php if (empty($events)): ?>
-        <p class="empty">No active cow bingo events right now.</p>
+        <p class="empty">No active cow pat bingo events right now.</p>
     <?php else: ?>
         <?php foreach ($events as $ev): 
             $total = $ev['grid_cols'] * $ev['grid_rows'];
@@ -44,7 +57,7 @@
                 <h2><?= htmlspecialchars($ev['event_name']) ?></h2>
                 <div class="meta"><?= $ev['grid_cols'] ?>x<?= $ev['grid_rows'] ?> grid &bull; <?= $ev['sold_count'] ?>/<?= $total ?> sold</div>
             </div>
-            <a href="?id=<?= $ev['id'] ?>">View Grid</a>
+            <a href="?id=<?= $ev['id'] ?>">View event</a>
         </div>
         <?php endforeach; ?>
     <?php endif; ?>

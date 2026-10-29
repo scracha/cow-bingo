@@ -55,6 +55,7 @@ $eventId = (int)$event['id'];
 $hieventsId = $event['hievents_event_id'] ?? null;
 $allowCellSelection = isset($event['allow_cell_selection']) ? (int)$event['allow_cell_selection'] : 1;
 $cellNaming = $event['cell_naming'] ?? 'alpha';
+$isEntriesClosed = !empty($event['entries_closed']);
 $lastAssigned = null;
 $errorMessage = '';
 
@@ -97,6 +98,8 @@ krsort($pricingTiers);
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'field_assign') {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
         $errorMessage = 'Security session expired. Please reload the page.';
+    } elseif ($isEntriesClosed) {
+        $errorMessage = '🔒 Entries are closed for this event. No new ticket sales can be made.';
     } else {
         $buyerName = trim($_POST['buyer_name'] ?? '');
         $buyerContact = trim($_POST['buyer_contact'] ?? '');
@@ -149,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
             if ($hasCollision) {
                 $db->rollBack();
-                $errorMessage = "⚠️  Square $cell was just taken by another seller! Please pick a different square.";
+                $errorMessage = "⚠️ Square $cell was just taken by another seller! Please pick a different square.";
             } else {
                 $db->commit();
                 $gridCols = (int)$event['grid_cols'];
@@ -201,6 +204,9 @@ $csrfToken = getCsrfToken();
             padding: 8px 12px; border-radius: 8px; font-weight: bold; font-size: 0.88em;
             margin-bottom: 10px; text-align: center;
         }
+        .mode-banner.closed {
+            background: #fee2e2; color: #991b1b; border-color: #fca5a5;
+        }
 
         .grid-container { background: white; padding: 10px; border-radius: 12px; overflow-x: auto; box-shadow: 0 4px 15px rgba(0,0,0,0.3); -webkit-overflow-scrolling: touch; }
         .grid { display: grid; grid-template-columns: 24px repeat(<?= $gridCols ?>, minmax(32px, 1fr)); gap: 3px; }
@@ -209,7 +215,7 @@ $csrfToken = getCsrfToken();
             aspect-ratio: 1; border-radius: 4px; font-size: 11px; font-weight: bold;
             display: flex; align-items: center; justify-content: center; user-select: none;
             background: #7bc67b; border: 1px solid #5aa35a; color: #1e461e;
-            cursor: <?= $allowCellSelection ? 'pointer' : 'default' ?>;
+            cursor: <?= ($allowCellSelection && !$isEntriesClosed) ? 'pointer' : 'default' ?>;
         }
         .cell.sold { background: #e0a37e; border-color: #ba7c57; color: #5a2e12; opacity: 0.6; pointer-events: none; }
         .cell.selected {
@@ -299,13 +305,17 @@ $csrfToken = getCsrfToken();
 
 <div class="top-bar">
     <span class="badge">📱 <?= htmlspecialchars($adminName) ?></span>
-    <span style="font-size:0.85em;"><?= $allowCellSelection ? 'Tap squares or pick random:' : 'Random Mode active:' ?></span>
+    <span style="font-size:0.85em;"><?= $isEntriesClosed ? 'Entries Closed' : ($allowCellSelection ? 'Tap squares or pick random:' : 'Random Mode active:') ?></span>
     <a href="admin.php?logout" style="color:#ffc107;text-decoration:none;font-size:0.85em;">Logout</a>
 </div>
 
-<?php if (!$allowCellSelection): ?>
+<?php if ($isEntriesClosed): ?>
+    <div class="mode-banner closed">
+        🔒 <strong>Entries Closed</strong> — Ticket sales are currently closed for this event. No new sales can be made.
+    </div>
+<?php elseif (!$allowCellSelection): ?>
     <div class="mode-banner">
-        🎲 <strong>Random Allocation Only Mode</strong> â€” Square tapping is disabled. Tap +1, +3, +5, or +10 below to assign tickets.
+        🎲 <strong>Random Allocation Only Mode</strong> — Square tapping is disabled. Tap +1, +3, +5, or +10 below to assign tickets.
     </div>
 <?php endif; ?>
 
@@ -320,6 +330,7 @@ $csrfToken = getCsrfToken();
     <div class="banner-error"><?= htmlspecialchars($errorMessage) ?></div>
 <?php endif; ?>
 
+<?php if (!$isEntriesClosed): ?>
 <div class="quick-pick">
     <span class="quick-label">🎲 Quick:</span>
     <button type="button" class="quick-btn" onclick="addRandomSquares(1)">+1</button>
@@ -328,6 +339,7 @@ $csrfToken = getCsrfToken();
     <button type="button" class="quick-btn" onclick="addRandomSquares(10)">+10</button>
     <button type="button" class="quick-btn btn-clear" onclick="clearSelected()">Clear</button>
 </div>
+<?php endif; ?>
 
 <div class="grid-container">
     <div class="grid">
@@ -346,7 +358,7 @@ $csrfToken = getCsrfToken();
                 <div class="cell <?= $isSold ? 'sold' : 'available' ?>" 
                      data-cell="<?= $ref ?>" 
                      data-display="<?= $displayRef ?>" 
-                     onclick="<?= $allowCellSelection ? 'toggleCell(this)' : '' ?>">
+                     onclick="<?= ($allowCellSelection && !$isEntriesClosed) ? 'toggleCell(this)' : '' ?>">
                     <?= $displayRef ?>
                 </div>
             <?php endforeach; ?>
@@ -367,6 +379,7 @@ $csrfToken = getCsrfToken();
 </div>
 <?php endif; ?>
 
+<?php if (!$isEntriesClosed): ?>
 <div class="checkout-tray">
     <form method="POST" id="posForm" autocomplete="off">
         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
@@ -385,10 +398,11 @@ $csrfToken = getCsrfToken();
         </div>
     </form>
 </div>
+<?php endif; ?>
 
 <script>
     const pricingTiers = <?= json_encode($pricingTiers) ?>;
-    const allowCellSelection = <?= $allowCellSelection ? 'true' : 'false' ?>;
+    const allowCellSelection = <?= ($allowCellSelection && !$isEntriesClosed) ? 'true' : 'false' ?>;
     const cellNaming = '<?= $cellNaming ?>';
     const gridCols = <?= $gridCols ?>;
     let selected = new Set();
@@ -397,17 +411,20 @@ $csrfToken = getCsrfToken();
         fetch('pos.php?ping=1').catch(() => {});
     }, 180000);
 
-    document.getElementById('posForm').addEventListener('submit', function(e) {
-        const btn = document.getElementById('submitBtn');
-        if (btn.disabled || btn.dataset.submitting === '1') {
-            e.preventDefault();
-            return false;
-        }
-        btn.dataset.submitting = '1';
-        btn.disabled = true;
-        btn.textContent = 'Recording Cash... ⏳';
-        return true;
-    });
+    const posFormEl = document.getElementById('posForm');
+    if (posFormEl) {
+        posFormEl.addEventListener('submit', function(e) {
+            const btn = document.getElementById('submitBtn');
+            if (btn.disabled || btn.dataset.submitting === '1') {
+                e.preventDefault();
+                return false;
+            }
+            btn.dataset.submitting = '1';
+            btn.disabled = true;
+            btn.textContent = 'Recording Cash... ⏳';
+            return true;
+        });
+    }
 
     function formatRef(ref) {
         if (cellNaming !== 'numeric') return ref;
@@ -475,12 +492,18 @@ $csrfToken = getCsrfToken();
         const qty = selected.size;
         const total = calculateBulkPrice(qty);
         
-        document.getElementById('selectedCellsInput').value = Array.from(selected).join(',');
-        document.getElementById('calculatedTotalInput').value = total;
-        document.getElementById('totalDisplay').textContent = '$' + total;
+        const selInput = document.getElementById('selectedCellsInput');
+        const calcInput = document.getElementById('calculatedTotalInput');
+        const totDisp = document.getElementById('totalDisplay');
+        const sumDisp = document.getElementById('selectedSummary');
+        const subBtn = document.getElementById('submitBtn');
+
+        if (selInput) selInput.value = Array.from(selected).join(',');
+        if (calcInput) calcInput.value = total;
+        if (totDisp) totDisp.textContent = '$' + total;
         const displayList = Array.from(selected).map(formatRef);
-        document.getElementById('selectedSummary').textContent = `${qty} sq (${displayList.join(', ') || 'None'})`;
-        document.getElementById('submitBtn').disabled = (qty === 0);
+        if (sumDisp) sumDisp.textContent = `${qty} sq (${displayList.join(', ') || 'None'})`;
+        if (subBtn) subBtn.disabled = (qty === 0);
     }
 </script>
 </body>

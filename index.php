@@ -1,13 +1,29 @@
 <?php
 /**
  * Cow Pat Bingo - Root Entrypoint Router
- * Redirects root folder requests directly to the public visual grid.
+ * Redirects to the active event's grid if only one exists, or to the public event selector.
  */
 
-// Preserve any query parameters (e.g. /cow-bingo/?id=2 or /cow-bingo/?event=slug)
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/includes/bingo_helpers.php';
+
 $queryString = !empty($_SERVER['QUERY_STRING']) ? ('?' . $_SERVER['QUERY_STRING']) : '';
 
+try {
+    $db = getDbConnection();
+    $activeEvents = $db->query("SELECT id FROM cow_bingo_events WHERE is_active = 1 ORDER BY id DESC")->fetchAll(PDO::FETCH_ASSOC);
+    
+    // If exactly one active event exists, go straight to its grid
+    if (count($activeEvents) === 1) {
+        $targetId = (int)$activeEvents[0]['id'];
+        $sep = !empty($_SERVER['QUERY_STRING']) ? ('?' . $_SERVER['QUERY_STRING'] . '&id=' . $targetId) : ('?id=' . $targetId);
+        header('Location: grid.php' . $sep, true, 302);
+        exit;
+    }
+} catch (\Throwable $e) {}
+
 header('Location: grid.php' . $queryString, true, 302);
+exit;
 ?>
 <!DOCTYPE html>
 <html lang="en">

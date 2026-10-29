@@ -13,11 +13,11 @@ $gridRows = max(2, (int)($viewEvent['grid_rows'] ?? 16));
 $totalSquares = $gridCols * $gridRows;
 $cellNaming = $viewEvent['cell_naming'] ?? 'alpha';
 $pricingTiers = !empty($viewEvent['pricing_tiers']) ? (json_decode($viewEvent['pricing_tiers'], true) ?: []) : [];
+$isEventLinkedHiEvents = !empty($viewEvent['hievents_event_id']);
 
 $showGrid = !isset($renderSection) || $renderSection === 'grid_and_prizes';
 $showTable = !isset($renderSection) || $renderSection === 'table_only';
 
-// Index sold cells by uppercase cell reference
 $soldMap = [];
 $soldCount = 0;
 $paidCount = 0;
@@ -40,7 +40,6 @@ foreach ($cells as $c) {
 
 $availableSquares = max(0, $totalSquares - $soldCount);
 
-// Generate Column Headers (A, B, C...)
 $colLabels = [];
 for ($c = 1; $c <= $gridCols; $c++) {
     $letters = '';
@@ -53,7 +52,6 @@ for ($c = 1; $c <= $gridCols; $c++) {
     $colLabels[] = $letters;
 }
 
-// Status filter for Table Section (All / Paid / Unpaid)
 $filterStatus = $_GET['filter_paid'] ?? 'all';
 $displayCells = array_filter($cells, function($c) use ($filterStatus) {
     if ($filterStatus === 'paid') return !empty($c['is_paid']);
@@ -63,9 +61,7 @@ $displayCells = array_filter($cells, function($c) use ($filterStatus) {
 ?>
 
 <?php if ($showGrid): ?>
-<!-- ===================================================================== -->
-<!-- SECTION 1: INTERACTIVE ASSIGNMENT GRID & PRIZES                      -->
-<!-- ===================================================================== -->
+<!-- SECTION 1: INTERACTIVE ASSIGNMENT GRID & PRIZES -->
 <div class="cells-grid-section" style="margin-bottom:30px;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px;">
         <div>
@@ -75,7 +71,6 @@ $displayCells = array_filter($cells, function($c) use ($filterStatus) {
             </p>
         </div>
 
-        <!-- Quick Award Prize by Ref Form -->
         <?php if ($canManage): ?>
         <form method="POST" action="admin.php?tab=cells&view=<?= $evId ?>" style="display:inline-flex; align-items:center; gap:6px; margin:0;">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
@@ -112,16 +107,16 @@ $displayCells = array_filter($cells, function($c) use ($filterStatus) {
     </div>
     <?php endif; ?>
 
-    <!-- Manual Assignment Control Box -->
+    <!-- Manual Assignment Control Box (Requirement 17: Handles names like O'Leary) -->
     <?php if ($canManage): ?>
     <div style="background:#fff; border-radius:10px; padding:18px 22px; box-shadow:0 1px 4px rgba(0,0,0,0.06); margin-bottom:18px; border:1.5px solid #e2e8f0;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
-            <strong style="color:#2d5016; font-size:0.95em;">✏️ï¸  Manual Square Assignment &bull; Click available squares below or use Quick Random:</strong>
+            <strong style="color:#2d5016; font-size:0.95em;">✏️ Manual Square Assignment &bull; Click available squares below or use Quick Random:</strong>
             <div style="display:inline-flex; gap:6px; align-items:center;">
                 <button type="button" onclick="adminAddRandom(1)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+1 Random</button>
                 <button type="button" onclick="adminAddRandom(3)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+3 Random</button>
                 <button type="button" onclick="adminAddRandom(5)" class="btn btn-sm" style="font-size:0.8em; padding:4px 8px;">+5 Random</button>
-                <button type="button" onclick="adminClearSelection()" class="btn btn-sm danger" style="font-size:0.8em; padding:4px 8px;">✏️• Clear</button>
+                <button type="button" onclick="adminClearSelection()" class="btn btn-sm danger" style="font-size:0.8em; padding:4px 8px;">Clear</button>
             </div>
         </div>
 
@@ -134,7 +129,7 @@ $displayCells = array_filter($cells, function($c) use ($filterStatus) {
             <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; align-items:flex-end;">
                 <div>
                     <label style="display:block; font-size:0.82em; font-weight:bold; color:#475569; margin-bottom:4px;">Buyer Name *</label>
-                    <input type="text" name="buyer_name" id="assign_buyer_name" required placeholder="Full Name" style="width:100%; padding:8px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9em;">
+                    <input type="text" name="buyer_name" id="assign_buyer_name" required placeholder="Full Name (e.g. Liam O'Leary)" style="width:100%; padding:8px 10px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.9em;">
                 </div>
                 <div>
                     <label style="display:block; font-size:0.82em; font-weight:bold; color:#475569; margin-bottom:4px;">Buyer Email / Phone</label>
@@ -163,19 +158,16 @@ $displayCells = array_filter($cells, function($c) use ($filterStatus) {
     </div>
     <?php endif; ?>
 
-    <!-- Interactive Admin Grid (With Column & Row Headers) -->
+    <!-- Interactive Admin Grid -->
     <div style="background:#fff; border-radius:10px; padding:18px; box-shadow:0 1px 4px rgba(0,0,0,0.06); overflow-x:auto;">
         <div style="display:grid; grid-template-columns:30px repeat(<?= $gridCols ?>, minmax(36px, 1fr)); gap:3px;">
-            <!-- Top Header Corner -->
             <div style="height:24px;"></div>
-            <!-- Column Letters A-Z -->
             <?php foreach ($colLabels as $cl): ?>
                 <div style="height:24px; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:bold; color:#64748b;">
                     <?= htmlspecialchars($cl) ?>
                 </div>
             <?php endforeach; ?>
 
-            <!-- Rows with Row Numbers -->
             <?php for ($r = 1; $r <= $gridRows; $r++): ?>
                 <div style="display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:bold; color:#64748b;">
                     <?= $r ?>
@@ -329,9 +321,7 @@ function adminUpdateSelectionUI() {
 <?php endif; ?>
 
 <?php if ($showTable): ?>
-<!-- ===================================================================== -->
-<!-- SECTION 2: BOOKINGS, CASH RECONCILIATION & UNPAID MANAGEMENT         -->
-<!-- ===================================================================== -->
+<!-- SECTION 2: BOOKINGS, CASH RECONCILIATION & UNPAID MANAGEMENT -->
 <div class="bookings-table-section">
     <!-- KPI Summary Row -->
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:20px;">
@@ -354,7 +344,6 @@ function adminUpdateSelectionUI() {
 
     <!-- Controls Bar: Filter Pills, Sort By, and Bulk Actions -->
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:12px; background:#fff; padding:12px 18px; border-radius:8px; box-shadow:0 1px 4px rgba(0,0,0,0.06);">
-        <!-- Filter Pills: All / Paid / Unpaid -->
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <span style="font-weight:bold; font-size:0.85em; color:#475569;">Filter:</span>
             <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=all&sort=<?= urlencode($sortBy) ?>" style="padding:4px 12px; border-radius:14px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $filterStatus === 'all' ? 'background:#2d5016; color:#fff;' : 'background:#f1f5f9; color:#475569; border:1px solid #cbd5e1;' ?>">
@@ -364,11 +353,10 @@ function adminUpdateSelectionUI() {
                 💵 Paid (<?= $paidCount ?>)
             </a>
             <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=unpaid&sort=<?= urlencode($sortBy) ?>" style="padding:4px 12px; border-radius:14px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $filterStatus === 'unpaid' ? 'background:#dc2626; color:#fff;' : 'background:#f1f5f9; color:#475569; border:1px solid #cbd5e1;' ?>">
-                ⚠️  Unpaid (<?= $unpaidCount ?>)
+                ⚠️ Unpaid (<?= $unpaidCount ?>)
             </a>
         </div>
 
-        <!-- Sort Options & Bulk Actions -->
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <span style="font-weight:bold; font-size:0.85em; color:#475569;">Sort:</span>
             <a href="admin.php?tab=bookings&view=<?= $evId ?>&filter_paid=<?= urlencode($filterStatus) ?>&sort=days_unpaid" style="padding:4px 10px; border-radius:6px; font-size:0.8em; font-weight:bold; text-decoration:none; <?= $sortBy === 'days_unpaid' ? 'background:#fef3c7; color:#92400e; border:1px solid #fde047;' : 'background:#f8fafc; color:#475569; border:1px solid #cbd5e1;' ?>">
@@ -382,18 +370,18 @@ function adminUpdateSelectionUI() {
             </a>
 
             <!-- Download CSV -->
-			<a href="admin.php?action=export_csv&event_db_id=<?= $evId ?>&amp;csrf_token=<?= urlencode($csrfToken) ?>" class="btn btn-sm" style="background:#f0fdf4; border-color:#bbf7d0; color:#166534; font-size:0.8em; padding:5px 10px;">
-				📥 Export CSV
-			</a>
+            <a href="admin.php?action=export_csv&event_db_id=<?= $evId ?>&csrf_token=<?= urlencode($csrfToken) ?>" class="btn btn-sm" style="background:#f0fdf4; border-color:#bbf7d0; color:#166534; font-size:0.8em; padding:5px 10px;">
+                📥 Export CSV
+            </a>
 
             <!-- Remove All Unpaid Squares Button -->
             <?php if ($canManage && $unpaidCount > 0): ?>
-            <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('⚠️  REMOVE ALL UNPAID SQUARES ⚠️ \n\nAre you sure you want to release all <?= $unpaidCount ?> unpaid squares for this event?\n\nAll unpaid reservations will be removed and returned to the available paddock pool.\n\nThis action cannot be undone.');">
+            <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('⚠️ REMOVE ALL UNPAID SQUARES ⚠️\n\nAre you sure you want to release all <?= $unpaidCount ?> unpaid squares for this event?\n\nAll unpaid reservations will be removed and returned to the available paddock pool.\n\nThis action cannot be undone.');">
                 <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                 <input type="hidden" name="action" value="delete_all_unpaid">
                 <input type="hidden" name="event_db_id" value="<?= $evId ?>">
                 <button type="submit" class="danger btn-sm" style="font-size:0.8em; padding:5px 10px;">
-                    🗑️  Remove All Unpaid (<?= $unpaidCount ?>)
+                    🗑️ Remove All Unpaid (<?= $unpaidCount ?>)
                 </button>
             </form>
             <?php endif; ?>
@@ -426,10 +414,18 @@ function adminUpdateSelectionUI() {
                         $canonical = $cell['cell_reference'];
                         $dispSquare = function_exists('formatCellRef') ? formatCellRef($canonical, $gridCols, $cellNaming) : $canonical;
                         $orderId = $cell['order_id'] ?? '';
-                        $isExternal = !empty($orderId) && strpos($orderId, 'MANUAL-') !== 0 && strpos($orderId, 'CASH-') !== 0;
+                        
+                        $isHiEventsOrder = $isEventLinkedHiEvents && !empty($orderId) && strpos($orderId, 'MANUAL-') !== 0 && strpos($orderId, 'CASH-') !== 0 && strpos($orderId, 'BANK-') !== 0;
                         
                         $createdTime = !empty($cell['created_at']) ? strtotime($cell['created_at']) : 0;
                         $daysOld = $createdTime > 0 ? (int)floor((time() - $createdTime) / 86400) : 0;
+                        $cellAmount = (float)($isPaid ? ($cell['price_paid'] ?? 0) : ($cell['order_amount'] ?? 0));
+
+                        // Requirement 17: Build safe JSON-encoded confirmation strings for names with apostrophes (e.g. O'Leary)
+                        $paidConfirmPrompt = "⚠️ CAUTION: THIS SQUARE IS PAID! ⚠️\n\nSquare: " . $dispSquare . "\nBuyer: " . $cell['buyer_name'] . "\nAmount Paid: $" . number_format($cellAmount, 2) . "\n\nThe customer has already paid for this square! Removing it will delete their reservation from the grid.\n\nAre you sure you want to permanently remove this PAID square?";
+                        $unpaidConfirmPrompt = "Remove unpaid square " . $dispSquare . " assigned to " . $cell['buyer_name'] . "?";
+                        $cancelNotifyPrompt = "Cancel reservation for " . $cell['buyer_name'] . " (Order #" . $orderId . ")?\n\nThis will notify the buyer via Hi.Events message and release the square.";
+                        $removePrizePrompt = "Remove prize from square " . $dispSquare . "?";
                     ?>
                     <tr style="<?= !$isPaid ? 'background:#fffbf7;' : '' ?>">
                         <td style="font-weight:bold; font-size:1.05em; color:#0f172a;">
@@ -439,7 +435,7 @@ function adminUpdateSelectionUI() {
                             <?= htmlspecialchars($cell['buyer_name']) ?>
                         </td>
                         <td style="color:#64748b; font-size:0.88em;">
-                            <?= htmlspecialchars($cell['buyer_email'] ?? '-') ?>
+                            <?= htmlspecialchars($cell['buyer_email'] ?? ($cell['buyer_phone'] ?? '-')) ?>
                         </td>
                         <td style="font-family:monospace; font-size:0.85em; color:#475569;">
                             <?= htmlspecialchars($cell['ticket_id']) ?><br>
@@ -452,12 +448,12 @@ function adminUpdateSelectionUI() {
                                 </span>
                             <?php else: ?>
                                 <span style="display:inline-block; font-size:0.8em; font-weight:bold; padding:2px 8px; border-radius:10px; background:#fef2f2; color:#dc2626; border:1px solid #fecaca;">
-                                    ⚠️  Unpaid <?= $daysOld > 0 ? '(' . $daysOld . 'd old)' : '(today)' ?>
+                                    ⚠️ Unpaid <?= $daysOld > 0 ? '(' . $daysOld . 'd old)' : '(today)' ?>
                                 </span>
                             <?php endif; ?>
                         </td>
                         <td style="font-weight:bold; color:<?= $isPaid ? '#059669' : '#d97706' ?>;">
-                            $<?= number_format((float)($isPaid ? ($cell['price_paid'] ?? 0) : ($cell['order_amount'] ?? 0)), 2) ?>
+                            $<?= number_format($cellAmount, 2) ?>
                         </td>
                         <td>
                             <?php if (!empty($cell['prize'])): ?>
@@ -466,12 +462,12 @@ function adminUpdateSelectionUI() {
                                         🏆 <?= htmlspecialchars($cell['prize']) ?>
                                     </span>
                                     <?php if ($canManage): ?>
-                                    <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('Remove prize from square <?= htmlspecialchars(addslashes($dispSquare)) ?>?');">
+                                    <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm(<?= htmlspecialchars(json_encode($removePrizePrompt), ENT_QUOTES, 'UTF-8') ?>);">
                                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                                         <input type="hidden" name="action" value="assign_prize">
                                         <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
                                         <input type="hidden" name="prize" value="">
-                                        <button type="submit" title="Remove Prize" style="background:none; border:none; color:#dc2626; font-size:0.85em; padding:0 2px; cursor:pointer;">🏆✏️–</button>
+                                        <button type="submit" title="Remove Prize" style="background:none; border:none; color:#dc2626; font-size:0.85em; padding:0 2px; cursor:pointer;">✕</button>
                                     </form>
                                     <?php endif; ?>
                                 </div>
@@ -490,8 +486,8 @@ function adminUpdateSelectionUI() {
                                     <button type="submit" class="primary btn-sm" style="font-size:0.75em; padding:3px 8px;">💵 Mark Paid</button>
                                 </form>
 
-                                <?php if ($isExternal): ?>
-                                <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('Cancel reservation for <?= htmlspecialchars(addslashes($cell['buyer_name'])) ?> (Order #<?= htmlspecialchars(addslashes($orderId)) ?>)?\n\nThis will notify the buyer via Hi.Events message and release the square.');">
+                                <?php if ($isHiEventsOrder): ?>
+                                <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm(<?= htmlspecialchars(json_encode($cancelNotifyPrompt), ENT_QUOTES, 'UTF-8') ?>);">
                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                                     <input type="hidden" name="action" value="cancel_and_notify">
                                     <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
@@ -500,11 +496,13 @@ function adminUpdateSelectionUI() {
                                 <?php endif; ?>
                                 <?php endif; ?>
                                 
-                                <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" onsubmit="return confirm('Remove square <?= htmlspecialchars(addslashes($dispSquare)) ?> assigned to <?= htmlspecialchars(addslashes($cell['buyer_name'])) ?>?');">
+                                <!-- Requirement 9 & 17: Safe, robust confirmation handling apostrophes in names -->
+                                <form method="POST" action="admin.php?tab=bookings&view=<?= $evId ?>" style="margin:0;" 
+                                      onsubmit="return confirm(<?= htmlspecialchars(json_encode($isPaid ? $paidConfirmPrompt : $unpaidConfirmPrompt), ENT_QUOTES, 'UTF-8') ?>);">
                                     <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                                     <input type="hidden" name="action" value="delete_cell">
                                     <input type="hidden" name="cell_id" value="<?= (int)$cell['id'] ?>">
-                                    <button type="submit" class="btn-sm" style="font-size:0.75em; padding:3px 8px; color:#dc2626;">✏️• Remove</button>
+                                    <button type="submit" class="btn-sm" style="font-size:0.75em; padding:3px 8px; color:#dc2626;">Remove</button>
                                 </form>
                             </div>
                         </td>

@@ -63,6 +63,12 @@ if (!$event && empty($_GET['id']) && empty($_GET['event'])) {
         GROUP BY e.id
     ")->fetchAll(PDO::FETCH_ASSOC);
 
+    // Requirement 1: If there is just one event, go straight to its grid
+    if (count($rawEvents) === 1 && empty($_GET['list'])) {
+        header('Location: grid.php?id=' . (int)$rawEvents[0]['id'], true, 302);
+        exit;
+    }
+
     $todayDate = date('Y-m-d');
     $liveEvents = [];
     $finishedEvents = [];
@@ -88,7 +94,6 @@ if (!$event && empty($_GET['id']) && empty($_GET['event'])) {
             } catch (Exception $e) {}
         }
 
-        // Active events are finished only if prizes were awarded or the scheduled date has passed
         $isFinished = $hasWinners || $isPastDate;
         $ev['is_finished'] = $isFinished;
         $ev['is_today'] = $isToday;
@@ -101,7 +106,6 @@ if (!$event && empty($_GET['id']) && empty($_GET['event'])) {
         }
     }
 
-    // Sort Live/Upcoming: Events today first, then closest upcoming (ASC), then events without dates
     usort($liveEvents, function($a, $b) {
         if ($a['is_today'] && !$b['is_today']) return -1;
         if (!$a['is_today'] && $b['is_today']) return 1;
@@ -113,7 +117,6 @@ if (!$event && empty($_GET['id']) && empty($_GET['event'])) {
         return $b['id'] - $a['id'];
     });
 
-    // Sort Finished: Most recent first
     usort($finishedEvents, function($a, $b) {
         if (!empty($a['event_start']) && !empty($b['event_start'])) {
             return strcmp($b['event_start'], $a['event_start']);
@@ -130,6 +133,12 @@ if (!$event) {
     http_response_code(404);
     die('Event not found or not currently active.');
 }
+
+// Requirement 16: Check active event count to know if "Back to Events" should be shown
+$activeEventsCount = 0;
+try {
+    $activeEventsCount = (int)$db->query("SELECT COUNT(*) FROM cow_bingo_events WHERE is_active = 1")->fetchColumn();
+} catch (\Throwable $e) {}
 
 // 4. Data Preparation for Grid View
 $gridCols = (int) $event['grid_cols'];
@@ -164,13 +173,15 @@ if (empty($_SESSION['grid_captcha_num1']) || empty($_SESSION['grid_captcha_num2'
 $captchaNum1 = $_SESSION['grid_captcha_num1'];
 $captchaNum2 = $_SESSION['grid_captcha_num2'];
 
-// Handle Public Ticket Booking / Reservation for Standalone Events
+// Handle Public Ticket Booking / Reservation for Standalone Events (supports names like O'Leary)
 $publicBookingSuccess = null;
 $publicBookingError = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'public_reserve') {
     if (!verifyCsrfToken($_POST['csrf_token'] ?? null)) {
         $publicBookingError = 'Security session expired. Please refresh the page and try again.';
+    } elseif (!empty($event['entries_closed'])) {
+        $publicBookingError = 'Entries for this event are closed. No new squares can be reserved.';
     } else {
         $userCaptcha = (int)($_POST['captcha_answer'] ?? -999);
         $expectedCaptcha = (int)($_SESSION['grid_captcha_answer'] ?? -998);

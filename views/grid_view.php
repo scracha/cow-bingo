@@ -3,11 +3,7 @@
 
 if (!function_exists('makeClickableLinks')) {
     function makeClickableLinks(string $html): string {
-        return preg_replace(
-            '/(https?:\/\/[^\s<]+)/i',
-            '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>',
-            $html
-        );
+        return formatRichText($html);
     }
 }
 
@@ -18,15 +14,18 @@ $gridRows = max(2, (int)($event['grid_rows'] ?? 16));
 $totalCells = $gridCols * $gridRows;
 $cellNaming = $event['cell_naming'] ?? 'alpha';
 $eventDesc = $event['event_description'] ?? '';
-$eventPaymentInstructions = $event['payment_instructions'] ?? '';
+$eventImage = $event['event_image'] ?? '';
+$eventPaymentInstructions = !empty($event['payment_instructions']) ? $event['payment_instructions'] : (!empty($event['event_description']) ? $event['event_description'] : "Please contact the event organisers for direct bank transfer details.");
 $eventVenue = $event['event_venue'] ?? '';
 $eventStart = $event['event_start'] ?? null;
 $startDisplay = !empty($eventStart) ? date('D, d M Y, g:ia', strtotime($eventStart)) : '';
 $isActive = !empty($event['is_active']);
+$isEntriesClosed = !empty($event['entries_closed']);
 $isAdmin = !empty($_SESSION['admin_id']);
 $allowCellSelection = !empty($event['allow_cell_selection']);
 $isRandomOnly = empty($allowCellSelection);
 $hasHiEvents = !empty($event['hievents_event_id']);
+$activeEventsCount = $activeEventsCount ?? 1;
 
 $pricingTiers = !empty($event['pricing_tiers']) ? (json_decode($event['pricing_tiers'], true) ?: []) : [];
 if (empty($pricingTiers)) {
@@ -34,7 +33,6 @@ if (empty($pricingTiers)) {
 }
 krsort($pricingTiers);
 
-// Generate column letters (A, B, C...)
 if (empty($cols) || !is_array($cols)) {
     $cols = [];
     for ($c = 1; $c <= $gridCols; $c++) {
@@ -53,20 +51,19 @@ $bookings = $bookings ?? [];
 $soldCount = count($bookings);
 $availableCount = max(0, $totalCells - $soldCount);
 
-// Requirement 2: Sold displays only actually paid tickets, Awaiting Payment displays unpaid tickets
 $paidBookings = array_filter($bookings, fn($b) => !empty($b['is_paid']));
 $paidCount = count($paidBookings);
 $unpaidCount = $soldCount - $paidCount;
 
 $winners = array_filter($bookings, fn($b) => !empty($b['prize']));
 $buyTicketsUrl = $buyTicketsUrl ?? '';
-
-// Requirement 6: Pre-allocated event prizes
 $eventPrizes = $eventPrizes ?? (function_exists('parseEventPrizes') ? parseEventPrizes($event['event_prizes'] ?? '') : []);
 
 $gridCsrf = function_exists('getCsrfToken') ? getCsrfToken() : ($_SESSION['csrf_token'] ?? '');
 $captchaNum1 = $captchaNum1 ?? ($_SESSION['grid_captcha_num1'] ?? 3);
 $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
+
+$canBuyTickets = $isActive && !$isEntriesClosed && empty($winners) && $availableCount > 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -85,8 +82,23 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         }
         .container { max-width: 1000px; margin: 0 auto; }
         header { text-align: center; margin-bottom: 20px; color: white; }
-        header h1 { font-size: 2.2em; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); margin-bottom: 5px; }
+        header h1 {
+            font-size: 2.2em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+            margin-bottom: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
         header p { font-size: 1.1em; opacity: 0.9; }
+
+        .header-poo-img {
+            height: 1.25em;
+            width: auto;
+            vertical-align: middle;
+            display: inline-block;
+        }
 
         .event-details-card {
             background: rgba(255,255,255,0.96);
@@ -99,6 +111,65 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
             color: #2b3a1a;
         }
         .event-details-card a { color: #15803d; font-weight: bold; text-decoration: underline; }
+
+        .top-action-bar {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .btn-top-buy {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            background: #2d5016;
+            color: #ffffff;
+            font-size: 1.15em;
+            font-weight: 800;
+            padding: 13px 30px;
+            border-radius: 30px;
+            border: 2px solid #86efac;
+            text-decoration: none;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .btn-top-buy:hover {
+            background: #3d6b20;
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+        }
+        .btn-bank-remind {
+            background: rgba(255,255,255,0.92);
+            color: #1e3a0f;
+            border: 1px solid rgba(255,255,255,0.4);
+            border-radius: 20px;
+            padding: 6px 16px;
+            font-size: 0.88em;
+            font-weight: 700;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+            transition: all 0.15s ease;
+        }
+        .btn-bank-remind:hover {
+            background: #ffffff;
+            color: #14532d;
+        }
+        .badge-entries-closed {
+            display: inline-block;
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1.5px solid #fecaca;
+            padding: 8px 18px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 0.95em;
+        }
 
         .stats { display: flex; justify-content: center; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; }
         .stat-box {
@@ -127,7 +198,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         }
         .btn-print-judges:hover { background: #f0fdf4; }
 
-        /* Pre-allocated Prizes Banner */
         .prizes-banner {
             background: rgba(255, 255, 255, 0.97);
             border-radius: 12px;
@@ -176,7 +246,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         .prize-status-won { color: #15803d; }
         .prize-status-pending { color: #64748b; }
 
-        /* Public Reservation Alert Banners */
         .alert-banner {
             border-radius: 10px;
             padding: 16px 20px;
@@ -198,31 +267,36 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
 
         .grid-wrapper {
             background: rgba(255,255,255,0.95); border-radius: 12px;
-            padding: 20px; box-shadow: 0 4px 20px rgba(0,0,0,0.2); overflow-x: auto;
+            padding: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+            overflow-x: auto;
             -webkit-overflow-scrolling: touch;
         }
-        .grid-header {
+        .paddock-grid {
             display: grid;
-            grid-template-columns: 35px repeat(<?= $gridCols ?>, 1fr);
-            gap: 2px; margin-bottom: 2px;
+            grid-template-columns: 32px repeat(<?= $gridCols ?>, minmax(36px, 1fr));
+            gap: 3px;
+            width: max-content;
+            min-width: 100%;
         }
-        .grid-header .col-label {
-            text-align: center; font-weight: bold; font-size: 12px; color: #555; padding: 4px 0;
-        }
-        .grid-row {
-            display: grid;
-            grid-template-columns: 35px repeat(<?= $gridCols ?>, 1fr);
-            gap: 2px; margin-bottom: 2px;
-        }
-        .row-label {
+        .col-corner-cell { width: 32px; height: 26px; }
+        .col-header-cell {
             display: flex; align-items: center; justify-content: center;
-            font-weight: bold; font-size: 12px; color: #555;
+            font-weight: bold; font-size: 11px; color: #475569;
+            height: 26px;
+            user-select: none;
+        }
+        .row-header-cell {
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 11px; color: #475569;
+            user-select: none;
         }
         .cell {
-            aspect-ratio: 1; min-width: 40px;
+            aspect-ratio: 1;
+            min-width: 36px;
             background-color: #7bc67b; border: 1px solid #5aa35a; border-radius: 4px;
             display: flex; align-items: center; justify-content: center;
-            font-size: 13px; font-weight: bold; color: #2c5e2c;
+            font-size: 12px; font-weight: bold; color: #2c5e2c;
             cursor: default; transition: all 0.15s ease; position: relative; user-select: none;
         }
         .cell.clickable {
@@ -408,7 +482,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         .winner-prize { font-weight: bold; color: #333; font-size: 1em; }
         .winner-name { color: #666; font-size: 0.9em; }
 
-        /* MODAL STYLES FOR PUBLIC BOOKING */
         .modal-backdrop {
             position: fixed;
             top: 0;
@@ -436,12 +509,11 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
             line-height: 1.5;
         }
 
-        /* PRINT STYLES FOR OFFICIAL PADDOCK JUDGES */
         .print-only { display: none; }
         @media print {
             body { background: white !important; color: black !important; padding: 0 !important; }
             .container { max-width: 100% !important; margin: 0 !important; width: 100% !important; }
-            header, .stats, .search-bar, .tooltip, .buy-link, .no-print, .event-details-card, .prizes-banner, .modal-backdrop, #publicPaddockTray { display: none !important; }
+            header, .stats, .search-bar, .tooltip, .buy-link, .no-print, .event-details-card, .prizes-banner, .modal-backdrop, #publicPaddockTray, .top-action-bar { display: none !important; }
             .grid-wrapper { box-shadow: none !important; padding: 0 !important; border: none !important; }
             .cell {
                 border: 1px solid #222 !important;
@@ -464,15 +536,22 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
 <body>
 <div class="container">
     <div class="no-print" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-        <a href="grid.php" style="color:white; text-decoration:none; font-weight:bold; font-size:0.9em;">&larr; Back to Events</a>
+        <?php if ($activeEventsCount > 1): ?>
+            <a href="grid.php?list=1" style="color:white; text-decoration:none; font-weight:bold; font-size:0.9em;">&larr; Back to Events</a>
+        <?php else: ?>
+            <div></div>
+        <?php endif; ?>
         <?php if ($isAdmin): ?>
-            <!-- Requirement 3: Print judges clipboard sheet ONLY shown to logged-in users -->
             <button type="button" class="btn-print-judges" onclick="window.print()">📋 Print Judges Clipboard Sheet</button>
         <?php endif; ?>
     </div>
 
     <header>
-        <h1><?= htmlspecialchars(defined('SITE_TITLE') ? SITE_TITLE : '🐮 Cow Pat Bingo 🐮') ?></h1>
+        <h1>
+            <span>🐮</span>
+            <img src="cow_poo_2.svg" alt="cow poo bingo" class="header-poo-img">
+            <span>Bingo</span>
+        </h1>
         <p style="font-size:1.3em; font-weight:bold; margin-top:4px;"><?= htmlspecialchars($eventName) ?></p>
         <?php if ($startDisplay || $eventVenue): ?>
             <p style="margin-top:5px; font-size:0.95em; opacity:0.9;">
@@ -488,7 +567,56 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         <?php endif; ?>
     </header>
 
-    <!-- Requirement 6: Pre-allocated Event Prizes Display -->
+    <div class="top-action-bar no-print">
+        <?php if ($canBuyTickets): ?>
+            <?php if ($hasHiEvents && $buyTicketsUrl): ?>
+                <a href="<?= htmlspecialchars($buyTicketsUrl) ?>" target="_blank" class="btn-top-buy">
+                    <span>🎟️</span> Buy Squares Online
+                </a>
+            <?php else: ?>
+                <button type="button" class="btn-top-buy" onclick="openPublicBookingModal()">
+                    <span>🎟️</span> Buy / Reserve Squares
+                </button>
+            <?php endif; ?>
+        <?php elseif ($isEntriesClosed && empty($winners)): ?>
+            <span class="badge-entries-closed">
+                🔒 Entries are now closed for this event
+            </span>
+        <?php endif; ?>
+
+        <?php if (!$hasHiEvents): ?>
+            <button type="button" class="btn-bank-remind" onclick="openBankDetailsModal()">
+                🏦 I've already reserved squares. Remind me of bank details
+            </button>
+        <?php endif; ?>
+    </div>
+
+    <?php if (!empty($publicBookingSuccess)): ?>
+    <div class="alert-banner alert-success no-print" style="margin-bottom:20px; background:#f0fdf4; border:2px solid #22c55e;">
+        <h3 style="margin-top:0; color:#15803d; font-size:1.25em;">🎉 Square Reservation Received!</h3>
+        <p style="margin:6px 0;">Thank you, <strong><?= htmlspecialchars($publicBookingSuccess['buyer_name']) ?></strong>! Your reservation of <strong><?= $publicBookingSuccess['cell_count'] ?> square(s)</strong> has been logged.</p>
+        <div style="background:#ffffff; border:1.5px solid #bbf7d0; border-radius:8px; padding:12px 16px; margin:12px 0;">
+            <div><strong>Order Reference:</strong> <code style="font-size:1.15em; color:#15803d; font-weight:bold;"><?= htmlspecialchars($publicBookingSuccess['order_id']) ?></code></div>
+            <div><strong>Total Due:</strong> <strong style="font-size:1.15em; color:#2d5016;">$<?= number_format($publicBookingSuccess['total_amount'], 2) ?></strong></div>
+            <div style="margin-top:8px; border-top:1px dashed #d1fae5; padding-top:8px;">
+                <strong>💳 Payment Instructions:</strong><br>
+                <div style="margin-top:4px; font-family:inherit; line-height:1.4; color:#374151;">
+                    <?= formatRichText($publicBookingSuccess['payment_instructions']) ?>
+                </div>
+            </div>
+        </div>
+        <div style="background:#fffbeb; border:1.5px solid #fde047; border-radius:8px; padding:10px 14px; margin-top:10px; color:#92400e; font-weight:600; font-size:0.9em;">
+            ⚠️ <strong>Please Note:</strong> Squares are <u>not reserved until payment is received</u>. Once payment is confirmed, your square(s) will be updated on the website.
+        </div>
+    </div>
+    <?php endif; ?>
+
+    <?php if (!empty($publicBookingError)): ?>
+    <div class="alert-banner alert-error no-print">
+        <strong>❌ Unable to complete reservation:</strong> <?= htmlspecialchars($publicBookingError) ?>
+    </div>
+    <?php endif; ?>
+
     <?php if (!empty($eventPrizes)): ?>
     <div class="prizes-banner no-print">
         <h3><span>🏆</span> Event Prizes to be Won</h3>
@@ -497,7 +625,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
                 $rankText = trim($pz['rank'] ?? '');
                 $prizeText = trim($pz['prize'] ?? '');
                 
-                // Match if already awarded
                 $winningClaim = null;
                 foreach ($winners as $ref => $w) {
                     $wPrize = strtolower(trim($w['prize']));
@@ -527,41 +654,21 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
     </div>
     <?php endif; ?>
 
-    <!-- Reservation Result Flash / Confirmation (Requirement 5) -->
-    <?php if (!empty($publicBookingSuccess)): ?>
-    <div class="alert-banner alert-success no-print" style="margin-bottom:20px; background:#f0fdf4; border:2px solid #22c55e;">
-        <h3 style="margin-top:0; color:#15803d; font-size:1.25em;">🎉 Ticket Reservation Received!</h3>
-        <p style="margin:6px 0;">Thank you, <strong><?= htmlspecialchars($publicBookingSuccess['buyer_name']) ?></strong>! Your reservation of <strong><?= $publicBookingSuccess['cell_count'] ?> square(s)</strong> has been logged.</p>
-        <div style="background:#ffffff; border:1.5px solid #bbf7d0; border-radius:8px; padding:12px 16px; margin:12px 0;">
-            <div><strong>Order Reference:</strong> <code style="font-size:1.15em; color:#15803d; font-weight:bold;"><?= htmlspecialchars($publicBookingSuccess['order_id']) ?></code></div>
-            <div><strong>Total Due:</strong> <strong style="font-size:1.15em; color:#2d5016;">$<?= number_format($publicBookingSuccess['total_amount'], 2) ?></strong></div>
-            <div style="margin-top:8px; border-top:1px dashed #d1fae5; padding-top:8px;">
-                <strong>💳 Payment Instructions:</strong><br>
-                <div style="margin-top:4px; font-family:inherit; line-height:1.4; color:#374151;">
-                    <?= makeClickableLinks(nl2br(htmlspecialchars($publicBookingSuccess['payment_instructions']))) ?>
-                </div>
-            </div>
-        </div>
-        <div style="background:#fffbeb; border:1.5px solid #fde047; border-radius:8px; padding:10px 14px; margin-top:10px; color:#92400e; font-weight:600; font-size:0.9em;">
-            ⚠️ <strong>Please Note:</strong> Your square(s) are <u>not reserved until payment is received</u>. Once payment is confirmed, your square(s) will be updated on the website.
-        </div>
-    </div>
-    <?php endif; ?>
-
-    <?php if (!empty($publicBookingError)): ?>
-    <div class="alert-banner alert-error no-print">
-        <strong>❌ Unable to complete reservation:</strong> <?= htmlspecialchars($publicBookingError) ?>
-    </div>
-    <?php endif; ?>
-
-    <?php if (!empty($eventDesc)): ?>
+    <!-- Event Info & Instructions -->
+    <?php if (!empty($eventDesc) || (!empty($eventImage) && file_exists(__DIR__ . '/../' . ltrim($eventImage, '/\\')))): ?>
     <div class="event-details-card no-print">
-        <strong>📍 Event Info &amp; Instructions:</strong><br>
-        <?= makeClickableLinks(nl2br(htmlspecialchars($eventDesc))) ?>
+        <?php if (!empty($eventDesc)): ?>
+            <strong>📍 Event Info &amp; Instructions:</strong><br>
+            <?= formatRichText($eventDesc) ?>
+        <?php endif; ?>
+        <?php if (!empty($eventImage) && file_exists(__DIR__ . '/../' . ltrim($eventImage, '/\\'))): ?>
+            <div class="event-image-container" style="margin-top:<?= !empty($eventDesc) ? '14px' : '0' ?>; text-align:center;">
+                <img src="<?= htmlspecialchars($eventImage) ?>" alt="<?= htmlspecialchars($eventName) ?> Poster" style="max-width:100%; height:auto; max-height:480px; object-fit:contain; border-radius:8px; box-shadow:0 3px 12px rgba(0,0,0,0.15); display:inline-block;">
+            </div>
+        <?php endif; ?>
     </div>
     <?php endif; ?>
 
-    <!-- Requirement 2: Sold, Awaiting Payment, and Available -->
     <div class="stats no-print">
         <div class="stat-box">
             <div class="number"><?= $paidCount ?></div>
@@ -575,14 +682,16 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
             <div class="number"><?= $availableCount ?></div>
             <div class="label">Available</div>
         </div>
-        <?php if ($hasHiEvents && $buyTicketsUrl && $isActive): ?>
-            <a href="<?= htmlspecialchars($buyTicketsUrl) ?>" target="_blank" class="stat-box buy-link">
-                <div class="number">🎟️</div><div class="label">Buy More Tickets</div>
-            </a>
-        <?php elseif (!$hasHiEvents && $isActive && $availableCount > 0): ?>
-            <button type="button" class="stat-box buy-link" onclick="openPublicBookingModal()" style="border:none;">
-                <div class="number">🎟️</div><div class="label">Buy / Reserve Tickets</div>
-            </button>
+        <?php if ($canBuyTickets): ?>
+            <?php if ($hasHiEvents && $buyTicketsUrl): ?>
+                <a href="<?= htmlspecialchars($buyTicketsUrl) ?>" target="_blank" class="stat-box buy-link">
+                    <div class="number">🎟️</div><div class="label">Buy Squares</div>
+                </a>
+            <?php else: ?>
+                <button type="button" class="stat-box buy-link" onclick="openPublicBookingModal()" style="border:none;">
+                    <div class="number">🎟️</div><div class="label">Buy / Reserve Squares</div>
+                </button>
+            <?php endif; ?>
         <?php endif; ?>
     </div>
 
@@ -599,15 +708,14 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
     </div>
 
     <div class="grid-wrapper">
-        <div class="grid-header">
-            <div></div>
+        <div class="paddock-grid">
+            <div class="col-corner-cell"></div>
             <?php foreach ($cols as $col): ?>
-                <div class="col-label"><?= $col ?></div>
+                <div class="col-header-cell"><?= $col ?></div>
             <?php endforeach; ?>
-        </div>
-        <?php for ($row = 1; $row <= $gridRows; $row++): ?>
-            <div class="grid-row">
-                <div class="row-label"><?= $row ?></div>
+
+            <?php for ($row = 1; $row <= $gridRows; $row++): ?>
+                <div class="row-header-cell"><?= $row ?></div>
                 <?php foreach ($cols as $col): 
                     $cellRef = $col . $row;
                     $displayRef = formatCellRef($cellRef, $gridCols, $cellNaming);
@@ -618,7 +726,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
                     $isPaid = $booking ? !empty($booking['is_paid']) : false;
                     $isWinner = $isTaken && !empty($booking['prize']);
 
-                    // Requirement 2: When random only is selected for an event, ONLY logged in users should be able to see where unpaid grid allocations are.
                     if ($isRandomOnly && !$isAdmin && $isTaken && !$isPaid) {
                         $isTaken = false;
                         $booking = null;
@@ -634,25 +741,24 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
 
                         $dataAttrs = sprintf(
                             'data-cell="%s" data-display="%s" data-numeric="%s" data-name="%s" data-ticket="%s" data-prize="%s" data-paid="%s"',
-                            htmlspecialchars($cellRef),
-                            htmlspecialchars($displayRef),
-                            htmlspecialchars($numericRef),
-                            htmlspecialchars($booking['buyer_name']),
-                            htmlspecialchars($booking['ticket_id']),
-                            htmlspecialchars($booking['prize'] ?? ''),
+                            htmlspecialchars($cellRef, ENT_QUOTES, 'UTF-8'),
+                            htmlspecialchars($displayRef, ENT_QUOTES, 'UTF-8'),
+                            htmlspecialchars($numericRef, ENT_QUOTES, 'UTF-8'),
+                            htmlspecialchars($booking['buyer_name'], ENT_QUOTES, 'UTF-8'),
+                            htmlspecialchars($booking['ticket_id'], ENT_QUOTES, 'UTF-8'),
+                            htmlspecialchars($booking['prize'] ?? '', ENT_QUOTES, 'UTF-8'),
                             $isPaid ? '1' : '0'
                         );
                     } else {
-                        // Unsold / Available square
-                        $isClickable = (!$hasHiEvents && $isActive && $allowCellSelection && $availableCount > 0);
+                        $isClickable = (!$hasHiEvents && $canBuyTickets && $allowCellSelection);
                         if ($isClickable) {
                             $classes .= ' clickable';
                         }
                         $dataAttrs = sprintf(
                             'data-cell="%s" data-display="%s" data-numeric="%s" onclick="%s"',
-                            htmlspecialchars($cellRef),
-                            htmlspecialchars($displayRef),
-                            htmlspecialchars($numericRef),
+                            htmlspecialchars($cellRef, ENT_QUOTES, 'UTF-8'),
+                            htmlspecialchars($displayRef, ENT_QUOTES, 'UTF-8'),
+                            htmlspecialchars($numericRef, ENT_QUOTES, 'UTF-8'),
                             $isClickable ? 'publicSelectCell(this)' : ''
                         );
                     }
@@ -666,20 +772,20 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
                         <?php endif; ?>
                     </div>
                 <?php endforeach; ?>
-            </div>
-        <?php endfor; ?>
+            <?php endfor; ?>
+        </div>
+
         <div class="legend no-print">
             <div class="legend-item"><div class="legend-swatch available"></div><span>Available</span></div>
             <div class="legend-item"><div class="legend-swatch sold"></div><span>Sold</span></div>
-            <div class="legend-item"><div class="legend-swatch winner"></div><span>Winner <img src="cow_poo_2.svg" style="width:36px;height:36px;vertical-align:middle;"></span></div>
-            <div class="legend-item"><div class="legend-swatch highlight"></div><span>Your Cells</span></div>
+            <div class="legend-item"><div class="legend-swatch winner"></div><span>Winner <img src="cow_poo_2.svg" style="width:32px;height:32px;vertical-align:middle;"></span></div>
+            <div class="legend-item"><div class="legend-swatch highlight"></div><span>Your Squares</span></div>
             <?php if ($isAdmin): ?>
                 <div class="legend-item"><div class="legend-swatch admin-unpaid"></div><span style="color:#dc2626;font-weight:bold;">Unpaid (Admin Only)</span></div>
             <?php endif; ?>
         </div>
     </div>
 
-    <!-- Requirement 3: Official Paddock Judges Sign-Off strictly ONLY for logged in users -->
     <?php if ($isAdmin): ?>
     <div class="print-only print-judges-box">
         <h3 style="margin-top:0; border-bottom:1px solid #000; padding-bottom:4px;">🐮 Official Paddock Judges Sign-Off</h3>
@@ -719,11 +825,10 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
     <?php endif; ?>
 </div>
 
-<!-- Requirement 5: Floating Selection Tray for Paddock Multi-Square Selection -->
-<?php if (!$hasHiEvents && $isActive && $allowCellSelection && $availableCount > 0): ?>
+<?php if (!$hasHiEvents && $canBuyTickets && $allowCellSelection): ?>
 <div id="publicPaddockTray" class="no-print" style="display:none; position:fixed; bottom:16px; left:50%; transform:translateX(-50%); background:#ffffff; color:#222; border-radius:30px; padding:10px 20px; box-shadow:0 8px 24px rgba(0,0,0,0.35); z-index:9000; align-items:center; gap:16px; border:2px solid #2d5016;">
     <div style="font-size:0.92em; font-weight:bold; color:#2d5016;">
-        <span id="floatingSelectedCount">0</span> sq selected &bull; <span id="floatingTotalDisplay" style="font-size:1.15em; font-weight:900;">$0.00</span>
+        <span id="floatingSelectedCount">0</span> selected &bull; <span id="floatingTotalDisplay" style="font-size:1.15em; font-weight:900;">$0.00</span>
     </div>
     <button type="button" onclick="openPublicBookingModal()" style="background:#2d5016; color:#fff; border:none; padding:8px 16px; border-radius:20px; font-weight:bold; font-size:0.9em; cursor:pointer;">
         Proceed to Reservation &rarr;
@@ -734,12 +839,11 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
 </div>
 <?php endif; ?>
 
-<!-- Requirement 5: Public Ticket Booking Modal for Standalone / Offline Events -->
-<?php if (!$hasHiEvents && $isActive && $availableCount > 0): ?>
+<?php if (!$hasHiEvents && $canBuyTickets): ?>
 <div id="publicBookingModal" class="modal-backdrop no-print" style="display:none;">
     <div class="modal-card">
         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:10px; margin-bottom:14px;">
-            <h3 style="margin:0; font-size:1.3em; color:#2d5016;">🎟️ Buy / Reserve Tickets</h3>
+            <h3 style="margin:0; font-size:1.3em; color:#2d5016;">🎟️ Buy / Reserve Squares</h3>
             <button type="button" onclick="closePublicBookingModal()" style="background:none; border:none; font-size:1.6em; cursor:pointer; color:#718096; line-height:1;">&times;</button>
         </div>
 
@@ -755,29 +859,35 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
                     <div id="publicSelectionPreview" style="margin-top:4px; font-weight:bold; color:#2d5016;">
                         <span id="publicSelectedSummary">1 random square</span>
                     </div>
-                    <small style="color:#64748b;">(Tip: You can tap available squares directly on the grid or use the Quick Pick buttons below)</small>
+                    <small style="color:#64748b;">(Tip: Tap available squares on the grid or use the increment buttons below)</small>
                 </div>
             <?php endif; ?>
 
             <div style="margin-bottom:14px;">
-                <label style="display:block; font-size:0.85em; font-weight:bold; color:#374151; margin-bottom:4px;">Quick Quantity:</label>
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#374151; margin-bottom:4px;">Add Squares:</label>
                 <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                    <button type="button" class="quick-qty-btn" onclick="setPublicQty(1)" style="flex:1; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">1 Sq</button>
-                    <button type="button" class="quick-qty-btn" onclick="setPublicQty(3)" style="flex:1; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">3 Sq</button>
-                    <button type="button" class="quick-qty-btn" onclick="setPublicQty(5)" style="flex:1; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">5 Sq</button>
-                    <button type="button" class="quick-qty-btn" onclick="setPublicQty(10)" style="flex:1; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">10 Sq</button>
+                    <button type="button" class="quick-qty-btn" onclick="addPublicQty(1)" style="flex:1; min-width:50px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">+1</button>
+                    <button type="button" class="quick-qty-btn" onclick="addPublicQty(3)" style="flex:1; min-width:50px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">+3</button>
+                    <button type="button" class="quick-qty-btn" onclick="addPublicQty(5)" style="flex:1; min-width:50px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">+5</button>
+                    <button type="button" class="quick-qty-btn" onclick="addPublicQty(10)" style="flex:1; min-width:50px; padding:7px 10px; border:1px solid #cbd5e1; border-radius:6px; background:#f1f5f9; font-weight:bold; cursor:pointer;">+10</button>
+                    <button type="button" class="quick-qty-btn" onclick="resetPublicQty()" style="padding:7px 12px; border:1px solid #fecaca; border-radius:6px; background:#fef2f2; color:#dc2626; font-weight:bold; cursor:pointer;">Reset</button>
                 </div>
             </div>
 
-            <!-- Live Total Display -->
             <div style="background:#ecfdf5; border:1.5px solid #a7f3d0; border-radius:8px; padding:12px 16px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:center;">
-                <span style="font-weight:bold; font-size:1em; color:#065f46;">Total to Pay:</span>
-                <span id="publicTotalDisplay" style="font-size:1.4em; font-weight:900; color:#047857;">$10.00</span>
+                <div>
+                    <span style="display:block; font-size:0.8em; text-transform:uppercase; font-weight:bold; color:#065f46;">Quantity</span>
+                    <span id="publicQtyCountDisplay" style="font-size:1.25em; font-weight:800; color:#065f46;">1 square</span>
+                </div>
+                <div style="text-align:right;">
+                    <span style="display:block; font-size:0.8em; text-transform:uppercase; font-weight:bold; color:#047857;">Total to Pay</span>
+                    <span id="publicTotalDisplay" style="font-size:1.4em; font-weight:900; color:#047857;">$10.00</span>
+                </div>
             </div>
 
             <div style="margin-bottom:12px;">
                 <label style="display:block; font-size:0.85em; font-weight:bold; color:#374151; margin-bottom:4px;">Your Name *</label>
-                <input type="text" name="buyer_name" id="public_buyer_name" required placeholder="Full Name" style="width:100%; padding:10px 12px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.95em;">
+                <input type="text" name="buyer_name" id="public_buyer_name" required placeholder="Full Name (e.g. Sean O'Leary)" style="width:100%; padding:10px 12px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.95em;">
             </div>
 
             <div style="margin-bottom:12px;">
@@ -791,7 +901,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
                 <input type="email" name="buyer_email" id="public_buyer_email" placeholder="you@example.co.nz" style="width:100%; padding:10px 12px; border:1.5px solid #cbd5e1; border-radius:6px; font-size:0.95em;">
             </div>
 
-            <!-- Math Captcha Challenge (Requirement 5) -->
             <div style="background:#fffbeb; border:1.5px solid #fde047; border-radius:8px; padding:12px 14px; margin-bottom:16px;">
                 <label style="display:block; font-size:0.88em; font-weight:bold; color:#854d0e; margin-bottom:6px;">
                     🛡️ Security Check: What is <?= $captchaNum1 ?> + <?= $captchaNum2 ?>? *
@@ -800,7 +909,7 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
             </div>
 
             <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:10px 14px; margin-bottom:16px; font-size:0.85em; color:#475569; line-height:1.4;">
-                ℹ️ <strong>Reservation Policy:</strong> Cell(s) are <u>not reserved until payment is received</u>. Payment instructions will be displayed immediately upon submission.
+                ℹ️ <strong>Reservation Policy:</strong> Squares are <u>not reserved until payment is received</u>. Payment instructions will be displayed immediately upon submission.
             </div>
 
             <div style="display:flex; justify-content:flex-end; gap:8px;">
@@ -814,6 +923,29 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
 </div>
 <?php endif; ?>
 
+<div id="bankDetailsModal" class="modal-backdrop no-print" style="display:none;">
+    <div class="modal-card">
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:10px; margin-bottom:14px;">
+            <h3 style="margin:0; font-size:1.3em; color:#2d5016;">🏦 Bank Transfer Details</h3>
+            <button type="button" onclick="closeBankDetailsModal()" style="background:none; border:none; font-size:1.6em; cursor:pointer; color:#718096; line-height:1;">&times;</button>
+        </div>
+
+        <p style="font-size:0.92em; color:#475569; margin-bottom:12px;">
+            If you have already submitted a reservation, please use the details below to complete your direct bank payment:
+        </p>
+
+        <div style="background:#f8fafc; border:1.5px solid #cbd5e1; border-radius:8px; padding:14px 18px; margin-bottom:16px; font-size:0.95em; line-height:1.6; color:#1e293b;">
+            <?= formatRichText($eventPaymentInstructions) ?>
+        </div>
+
+        <div style="text-align:right;">
+            <button type="button" onclick="closeBankDetailsModal()" style="background:#2d5016; color:#fff; border:none; padding:9px 20px; border-radius:6px; font-weight:bold; cursor:pointer;">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
 <div class="tooltip no-print" id="tooltip"></div>
 <script>
     const tooltip = document.getElementById('tooltip');
@@ -823,10 +955,11 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
     const gridCols = <?= $gridCols ?>;
     const allowCellSelection = <?= $allowCellSelection ? 'true' : 'false' ?>;
     const pricingTiers = <?= json_encode($pricingTiers) ?>;
+    const maxAvailable = <?= (int)$availableCount ?>;
 
     let publicSelectedSet = new Set();
 
-    const escHtml = (s) => String(s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const escHtml = (s) => String(s || '').replace(/[&<>'"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
     takenCells.forEach(cell => {
         cell.addEventListener('mouseenter', (e) => {
@@ -898,7 +1031,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         document.getElementById('clearBtn').style.display = 'none';
     }
 
-    // Public Booking Modal & Cell Interaction Handlers
     function calculateBulkPrice(qty) {
         if (qty <= 0) return 0.00;
         let total = 0;
@@ -929,6 +1061,16 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         }
     }
 
+    function openBankDetailsModal() {
+        const modal = document.getElementById('bankDetailsModal');
+        if (modal) modal.style.display = 'flex';
+    }
+
+    function closeBankDetailsModal() {
+        const modal = document.getElementById('bankDetailsModal');
+        if (modal) modal.style.display = 'none';
+    }
+
     function publicSelectCell(el) {
         if (!allowCellSelection) return;
         const ref = el.dataset.cell;
@@ -951,15 +1093,29 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         updatePublicTotals();
     }
 
-    function setPublicQty(qty) {
-        if (allowCellSelection && publicSelectedSet.size > 0) {
-            publicSelectedSet.forEach(ref => {
-                const node = document.querySelector(`.cell[data-cell="${ref}"]`);
-                if (node) node.classList.remove('selected');
-            });
-            publicSelectedSet.clear();
+    function addPublicQty(delta) {
+        const qtyInput = document.getElementById('public_ticket_qty');
+        let current = parseInt(qtyInput ? qtyInput.value : 1, 10) || 1;
+        if (publicSelectedSet.size > 0) {
+            current = publicSelectedSet.size;
         }
-        document.getElementById('public_ticket_qty').value = qty;
+        let target = current + delta;
+        if (target > maxAvailable && maxAvailable > 0) {
+            target = maxAvailable;
+        }
+        if (target < 1) target = 1;
+        
+        if (publicSelectedSet.size > 0) {
+            clearPublicSelection();
+        }
+        if (qtyInput) qtyInput.value = target;
+        updatePublicTotals();
+    }
+
+    function resetPublicQty() {
+        clearPublicSelection();
+        const qtyInput = document.getElementById('public_ticket_qty');
+        if (qtyInput) qtyInput.value = 1;
         updatePublicTotals();
     }
 
@@ -968,6 +1124,7 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
         const selectedInput = document.getElementById('public_selected_cells');
         const summarySpan = document.getElementById('publicSelectedSummary');
         const totalDisplay = document.getElementById('publicTotalDisplay');
+        const qtyCountDisplay = document.getElementById('publicQtyCountDisplay');
 
         let qty = 1;
         if (publicSelectedSet.size > 0) {
@@ -989,6 +1146,7 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
 
         const total = calculateBulkPrice(qty);
         if (totalDisplay) totalDisplay.textContent = '$' + total;
+        if (qtyCountDisplay) qtyCountDisplay.textContent = `${qty} square${qty > 1 ? 's' : ''}`;
 
         const tray = document.getElementById('publicPaddockTray');
         const floatCount = document.getElementById('floatingSelectedCount');
@@ -1049,7 +1207,6 @@ $captchaNum2 = $captchaNum2 ?? ($_SESSION['grid_captcha_num2'] ?? 5);
 </script>
 
 <?php if ($isAdmin && !empty($_GET['print'])): ?>
-<!-- Requirement 3: Auto-print trigger strictly restricted to logged-in admins -->
 <script>
     window.addEventListener('load', () => {
         setTimeout(() => window.print(), 250);

@@ -10,6 +10,58 @@ function canManageEvent(PDO $db, int $adminId, int $eventId): bool {
 }
 
 /**
+ * Helper: Securely handle event image uploads
+ */
+function handleEventImageUpload(array $file): ?string {
+    if (!isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK) {
+        return null;
+    }
+    if ($file['size'] > 6 * 1024 * 1024) { // 6MB maximum
+        return null;
+    }
+    $finfo = new finfo(FILEINFO_MIME_TYPE);
+    $mime = $finfo->file($file['tmp_name']);
+    $allowedMimes = [
+        'image/jpeg' => 'jpg',
+        'image/png'  => 'png',
+        'image/webp' => 'webp',
+        'image/gif'  => 'gif',
+    ];
+    if (!isset($allowedMimes[$mime])) {
+        return null;
+    }
+    $ext = $allowedMimes[$mime];
+    $uploadDir = __DIR__ . '/../uploads/events';
+    if (!is_dir($uploadDir)) {
+        @mkdir($uploadDir, 0755, true);
+    }
+    $htaccess = $uploadDir . '/.htaccess';
+    if (!file_exists($htaccess)) {
+        @file_put_contents($htaccess, "Options -Indexes\n<FilesMatch \"\\.(php|phtml|php3|php4|php5|php7|php8|phps|cgi|pl|sh)$\">
+Require all denied\n</FilesMatch>\n");
+    }
+    $filename = 'event_' . bin2hex(random_bytes(8)) . '.' . $ext;
+    $targetPath = $uploadDir . '/' . $filename;
+    if (move_uploaded_file($file['tmp_name'], $targetPath)) {
+        return 'uploads/events/' . $filename;
+    }
+    return null;
+}
+
+/**
+ * Helper: Safely delete an uploaded event image file from disk
+ */
+function deleteEventImageFile(?string $relPath): void {
+    if (empty($relPath)) return;
+    $fullPath = __DIR__ . '/../' . ltrim($relPath, '/\\');
+    $realUploads = realpath(__DIR__ . '/../uploads');
+    $realTarget = realpath($fullPath);
+    if ($realTarget && $realUploads && str_starts_with($realTarget, $realUploads) && file_exists($realTarget)) {
+        @unlink($realTarget);
+    }
+}
+
+/**
  * Sync Attendees from Hi.Events (Safe: Never demotes locally paid cells back to unpaid)
  */
 function syncAttendeesFromHiEvents(PDO $db, array $event): int {
@@ -57,7 +109,6 @@ function syncAttendeesFromHiEvents(PDO $db, array $event): int {
             $existing = $checkStmt->fetch(PDO::FETCH_ASSOC);
 
             if ($existing) {
-                // Only upgrade 0 -> 1; never revert a locally paid square back to unpaid
                 if ((int)$existing['is_paid'] === 0 && $isPaid === 1) {
                     $db->prepare("UPDATE cow_bingo_cells SET is_paid = 1 WHERE id = ?")->execute([$existing['id']]);
                 }
@@ -86,7 +137,8 @@ function syncAttendeesFromHiEvents(PDO $db, array $event): int {
 /**
  * Helper: Synchronize local cash payment to Hi.Events order
  */
-function markHiEventsOrderAsPaid(string $hieventsEventId, string $orderId): bool {
+function markHiEventsOrderAsPaid(?string $hieventsEventId, ?string $orderId): bool {
+    if (empty($hieventsEventId) || empty($orderId)) return false;
     if (defined('HIEVENTS_ENABLED') && !HIEVENTS_ENABLED) return false;
     $token = getHiEventsToken();
     if (!$token) return false;
@@ -110,7 +162,8 @@ function markHiEventsOrderAsPaid(string $hieventsEventId, string $orderId): bool
 /**
  * Cancel an order in Hi.Events via API
  */
-function cancelHiEventsOrder(string $hieventsEventId, string $orderId): bool {
+function cancelHiEventsOrder(?string $hieventsEventId, ?string $orderId): bool {
+    if (empty($hieventsEventId) || empty($orderId)) return false;
     if (defined('HIEVENTS_ENABLED') && !HIEVENTS_ENABLED) return false;
     $token = getHiEventsToken();
     if (!$token) return false;
@@ -134,7 +187,8 @@ function cancelHiEventsOrder(string $hieventsEventId, string $orderId): bool {
 /**
  * Send a message / notification to an order attendee in Hi.Events via API
  */
-function messageHiEventsOrder(string $hieventsEventId, string $orderId, string $subject, string $body): bool {
+function messageHiEventsOrder(?string $hieventsEventId, ?string $orderId, string $subject, string $body): bool {
+    if (empty($hieventsEventId) || empty($orderId)) return false;
     if (defined('HIEVENTS_ENABLED') && !HIEVENTS_ENABLED) return false;
     $token = getHiEventsToken();
     if (!$token) return false;
@@ -163,8 +217,7 @@ function ensureSchemaMigrated(PDO $db): void {
     if ($done) return;
     $done = true;
 
-    // Cache migration check to avoid repeated SHOW COLUMNS on every public hit
-    $cacheFile = sys_get_temp_dir() . '/cow_bingo_schema_v3.lock';
+    $cacheFile = sys_get_temp_dir() . '/cow_bingo_schema_v5.lock';
     if (file_exists($cacheFile) && (time() - filemtime($cacheFile) < 86400)) {
         return;
     }
@@ -184,9 +237,23 @@ function ensureSchemaMigrated(PDO $db): void {
     } catch (\Throwable $e) {}
 
     try {
+        $st = $db->query("SHOW COLUMNS FROM cow_bingo_events LIKE 'event_image'");
+        if ($st && !$st->fetch()) {
+            $db->exec("ALTER TABLE cow_bingo_events ADD COLUMN event_image VARCHAR(255) DEFAULT NULL AFTER event_description");
+        }
+    } catch (\Throwable $e) {}
+
+    try {
         $st = $db->query("SHOW COLUMNS FROM cow_bingo_events LIKE 'event_prizes'");
         if ($st && !$st->fetch()) {
             $db->exec("ALTER TABLE cow_bingo_events ADD COLUMN event_prizes TEXT DEFAULT NULL AFTER pricing_tiers");
+        }
+    } catch (\Throwable $e) {}
+
+    try {
+        $st = $db->query("SHOW COLUMNS FROM cow_bingo_events LIKE 'entries_closed'");
+        if ($st && !$st->fetch()) {
+            $db->exec("ALTER TABLE cow_bingo_events ADD COLUMN entries_closed TINYINT(1) NOT NULL DEFAULT 0 AFTER is_active");
         }
     } catch (\Throwable $e) {}
 

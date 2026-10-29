@@ -93,6 +93,8 @@ if (!function_exists('formatPricingTiersForInput')) {
             $totalCells = ((int)($ev['grid_cols'] ?? 16)) * ((int)($ev['grid_rows'] ?? 16));
             $isLinked = !empty($ev['hievents_event_id']);
             $cellNamingVal = $ev['cell_naming'] ?? 'alpha';
+            $isEntriesClosed = !empty($ev['entries_closed']);
+            $evImage = $ev['event_image'] ?? '';
 
             $eventDataJson = htmlspecialchars(json_encode([
                 'id' => $evId,
@@ -100,11 +102,13 @@ if (!function_exists('formatPricingTiersForInput')) {
                 'venue' => $ev['event_venue'] ?? '',
                 'start' => $isoStart,
                 'description' => $ev['event_description'] ?? '',
+                'image' => $evImage,
                 'payment_instructions' => $ev['payment_instructions'] ?? '',
                 'event_prizes_input' => formatEventPrizesForInput($ev['event_prizes'] ?? ''),
                 'cell_naming' => $cellNamingVal,
                 'pricing_tiers' => $inputTiers,
                 'allow_cell_selection' => (int)($ev['allow_cell_selection'] ?? 0),
+                'entries_closed' => (int)($ev['entries_closed'] ?? 0),
                 'hievents_event_id' => $ev['hievents_event_id'] ?? ''
             ]), ENT_QUOTES, 'UTF-8');
         ?>
@@ -112,18 +116,27 @@ if (!function_exists('formatPricingTiersForInput')) {
             <div>
                 <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:8px;">
                     <h3 style="margin:0; font-size:1.2em; color:#1a202c;"><?= htmlspecialchars($ev['event_name']) ?></h3>
-                    <div style="display:flex; gap:6px; align-items:center;">
+                    <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
                         <?php if ($isSelected): ?>
                             <span style="font-size:0.75em; font-weight:bold; padding:3px 8px; border-radius:12px; background:#2d5016; color:#fff;">★ SELECTED</span>
                         <?php endif; ?>
+                        <?php if ($isEntriesClosed): ?>
+                            <span style="font-size:0.75em; font-weight:bold; padding:3px 8px; border-radius:12px; background:#fef2f2; color:#dc2626; border:1px solid #fecaca;">🔒 ENTRIES CLOSED</span>
+                        <?php endif; ?>
                         <span style="font-size:0.75em; font-weight:bold; padding:3px 8px; border-radius:12px; background:<?= !empty($ev['is_active']) ? '#dcfce7; color:#15803d;' : '#f1f5f9; color:#64748b;' ?>">
-                            <?= !empty($ev['is_active']) ? '—  ACTIVE' : '—‹ DEACTIVATED' ?>
+                            <?= !empty($ev['is_active']) ? 'ACTIVE' : 'DEACTIVATED' ?>
                         </span>
                     </div>
                 </div>
 
+                <?php if (!empty($evImage) && file_exists(__DIR__ . '/../' . ltrim($evImage, '/\\'))): ?>
+                    <div style="margin-bottom:12px; text-align:center;">
+                        <img src="<?= htmlspecialchars($evImage) ?>" alt="<?= htmlspecialchars($ev['event_name']) ?>" style="max-height:120px; max-width:100%; border-radius:6px; object-fit:contain; box-shadow:0 1px 4px rgba(0,0,0,0.1);">
+                    </div>
+                <?php endif; ?>
+
                 <p style="font-size:0.85em; color:#718096; margin-bottom:12px;">
-                    📍 … <?= htmlspecialchars($startDateFmt) ?><br>
+                    📅 <?= htmlspecialchars($startDateFmt) ?><br>
                     <?php if (!empty($ev['event_venue'])): ?>📍 <?= htmlspecialchars($ev['event_venue']) ?><br><?php endif; ?>
                     🔢 Grid: <?= (int)$ev['grid_cols'] ?> &times; <?= (int)$ev['grid_rows'] ?> (<?= $totalCells ?> squares &bull; <?= $cellNamingVal === 'numeric' ? '1, 2, 3' : 'A1, B2' ?>)
                 </p>
@@ -133,12 +146,12 @@ if (!function_exists('formatPricingTiersForInput')) {
                     $shortDesc = function_exists('mb_strimwidth') ? mb_strimwidth($rawDesc, 0, 140, '...') : (strlen($rawDesc) > 140 ? substr($rawDesc, 0, 137) . '...' : $rawDesc);
                 ?>
                     <div style="background:#f8fafc; border-radius:6px; padding:8px 12px; font-size:0.85em; color:#475569; margin-bottom:12px; line-height:1.4;">
-                        <?= nl2br(htmlspecialchars($shortDesc)) ?>
+                        <?= formatRichText($shortDesc) ?>
                     </div>
                 <?php endif; ?>
 
                 <div style="font-size:0.82em; color:#4b5563; margin-bottom:12px; line-height:1.6;">
-                    <div><strong>🎟️  Pricing:</strong> <?= htmlspecialchars($displayTiers) ?></div>
+                    <div><strong>🎟️ Pricing:</strong> <?= htmlspecialchars($displayTiers) ?></div>
                     <?php 
                     $cardPrizes = parseEventPrizes($ev['event_prizes'] ?? '');
                     if (!empty($cardPrizes)): ?>
@@ -182,19 +195,28 @@ if (!function_exists('formatPricingTiersForInput')) {
             <div style="border-top:1px solid #edf2f7; padding-top:12px; margin-top:8px; display:flex; flex-direction:column; gap:8px;">
                 <div style="display:flex; gap:6px;">
                     <?php if (!$isSelected): ?>
-                        <a href="admin.php?tab=events&select_event=<?= $evId ?>" style="flex:1; text-align:center; background:#f0fdf4; color:#166534; border:1.5px solid #86efac; padding:7px 8px; border-radius:6px; text-decoration:none; font-weight:bold; font-size:0.82em;">🎯 Select Event</a>
+                        <a href="admin.php?tab=events&amp;select_event=<?= $evId ?>" style="flex:1; text-align:center; background:#f0fdf4; color:#166534; border:1.5px solid #86efac; padding:7px 8px; border-radius:6px; text-decoration:none; font-weight:bold; font-size:0.82em;">🎯 Select Event</a>
                     <?php else: ?>
                         <span style="flex:1; text-align:center; background:#2d5016; color:#fff; border:1px solid #2d5016; padding:7px 8px; border-radius:6px; font-weight:bold; font-size:0.82em;">✓ Active Event</span>
                     <?php endif; ?>
                     <a href="grid.php?id=<?= $evId ?>" target="_blank" style="flex:0.9; text-align:center; background:#f8fafc; color:#334155; border:1px solid #cbd5e1; padding:7px 8px; border-radius:6px; text-decoration:none; font-weight:bold; font-size:0.82em;">🌐 View Grid</a>
-                    <a href="admin.php?tab=cells&view=<?= $evId ?>" style="flex:0.9; text-align:center; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; padding:7px 8px; border-radius:6px; text-decoration:none; font-weight:bold; font-size:0.82em;">🎲 Cells</a>
+                    <a href="admin.php?tab=cells&amp;view=<?= $evId ?>" style="flex:0.9; text-align:center; background:#eff6ff; color:#1e40af; border:1px solid #bfdbfe; padding:7px 8px; border-radius:6px; text-decoration:none; font-weight:bold; font-size:0.82em;">🎲 Cells</a>
                     <?php if ($canManage): ?>
-                        <button type="button" class="btn-edit-event" data-event="<?= $eventDataJson ?>" style="flex:0.7; background:#f8fafc; border:1px solid #cbd5e1; color:#334155; padding:7px 8px; border-radius:6px; font-weight:bold; font-size:0.82em; cursor:pointer;">✏️ï¸  Edit</button>
+                        <button type="button" class="btn-edit-event" data-event="<?= $eventDataJson ?>" style="flex:0.7; background:#f8fafc; border:1px solid #cbd5e1; color:#334155; padding:7px 8px; border-radius:6px; font-weight:bold; font-size:0.82em; cursor:pointer;">✏️ Edit</button>
                     <?php endif; ?>
                 </div>
 
                 <?php if ($canManage): ?>
                 <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding-top:2px;">
+                    <form method="POST" action="admin.php?tab=events" style="margin:0;">
+                        <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
+                        <input type="hidden" name="action" value="toggle_entries_closed">
+                        <input type="hidden" name="event_db_id" value="<?= $evId ?>">
+                        <button type="submit" style="background:none; border:none; padding:2px 4px; font-size:0.8em; color:<?= $isEntriesClosed ? '#15803d' : '#dc2626' ?>; cursor:pointer; text-decoration:underline; font-weight:bold;">
+                            <?= $isEntriesClosed ? '🔓 Open Entries' : '🔒 Close Entries' ?>
+                        </button>
+                    </form>
+                    <span style="color:#cbd5e1;">&bull;</span>
                     <form method="POST" action="admin.php?tab=events" style="margin:0;">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                         <input type="hidden" name="action" value="toggle_event">
@@ -224,12 +246,12 @@ if (!function_exists('formatPricingTiersForInput')) {
 
                     <?php if ($isSuperAdmin): ?>
                     <span style="color:#cbd5e1;">&bull;</span>
-                    <form method="POST" action="admin.php?tab=events" style="margin:0;" onsubmit="return confirm('🚨 PERMANENT EVENT DELETION 🚨\n\nAre you sure you want to completely delete event \'<?= htmlspecialchars(addslashes($ev['event_name'])) ?>\'?\n\nThis will permanently delete:\n- The event itself\n- All sold & unsold squares\n- All audit logs & activity history\n- All associated webhook records\n\nThis action CANNOT be undone!');">
+                    <form method="POST" action="admin.php?tab=events" style="margin:0;" onsubmit="return confirm('PERMANENT EVENT DELETION\n\nAre you sure you want to completely delete event \'<?= htmlspecialchars(addslashes($ev['event_name'])) ?>\'?\n\nThis will permanently delete:\n- The event itself\n- The uploaded flyer/image\n- All sold &amp; unsold squares\n- All audit logs &amp; activity history\n- All associated webhook records\n\nThis action CANNOT be undone!');">
                         <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
                         <input type="hidden" name="action" value="delete_event">
                         <input type="hidden" name="event_db_id" value="<?= $evId ?>">
                         <button type="submit" style="background:none; border:none; padding:2px 4px; font-size:0.8em; color:#dc2626; cursor:pointer; text-decoration:underline;">
-                            🗑️  Delete Event
+                            🗑️ Delete Event
                         </button>
                     </form>
                     <?php endif; ?>
@@ -245,11 +267,11 @@ if (!function_exists('formatPricingTiersForInput')) {
 <div id="editEventModal" class="modal-backdrop" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:99999; align-items:center; justify-content:center;">
     <div class="modal-box" style="background:#fff; border-radius:12px; width:92%; max-width:540px; max-height:90vh; overflow-y:auto; padding:24px 28px; box-shadow:0 10px 30px rgba(0,0,0,0.4); font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
         <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:12px; margin-bottom:16px;">
-            <h3 style="margin:0; font-size:1.3em; color:#2d5016;">✏️ï¸  Edit Event Details</h3>
+            <h3 style="margin:0; font-size:1.3em; color:#2d5016;">✏️ Edit Event Details</h3>
             <button type="button" onclick="closeEditEventModal()" style="background:none; border:none; font-size:1.5em; cursor:pointer; color:#718096;">&times;</button>
         </div>
 
-        <form method="POST" action="admin.php?tab=events">
+        <form method="POST" action="admin.php?tab=events" enctype="multipart/form-data">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
             <input type="hidden" name="action" value="update_event_details">
             <input type="hidden" name="event_db_id" id="edit_event_db_id" value="">
@@ -273,12 +295,27 @@ if (!function_exists('formatPricingTiersForInput')) {
             <div style="margin-bottom:14px;">
                 <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">Event Description &amp; Public Notes</label>
                 <textarea name="event_description" id="edit_event_description" rows="3" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit; line-height:1.4;"></textarea>
+                <small style="color:#64748b; font-size:0.8em;">Supports **bold**, *italics*, &lt;b&gt;, &lt;i&gt;, and links.</small>
+            </div>
+
+            <!-- Event Image / Poster Upload & Removal Section -->
+            <div style="margin-bottom:14px;">
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">Event Poster / Image (Optional)</label>
+                <div id="edit_image_preview_box" style="display:none; margin-bottom:8px; padding:10px; background:#f8fafc; border:1px solid #cbd5e1; border-radius:6px;">
+                    <img id="edit_image_preview" src="" alt="Current Poster" style="max-height:120px; max-width:100%; border-radius:4px; display:block; margin:0 auto 8px;">
+                    <label style="font-size:0.85em; color:#dc2626; font-weight:bold; cursor:pointer; display:inline-flex; align-items:center; gap:6px;">
+                        <input type="checkbox" name="remove_event_image" id="edit_remove_event_image" value="1">
+                        🗑️ Remove current image
+                    </label>
+                </div>
+                <input type="file" name="event_image" accept="image/jpeg,image/png,image/webp,image/gif" style="width:100%; padding:6px; border:1.5px solid #ccc; border-radius:6px; font-size:0.88em;">
+                <small style="color:#64748b; font-size:0.8em;">JPG, PNG, WEBP, or GIF (max 6MB). Displayed at bottom of Event Info.</small>
             </div>
 
             <div style="margin-bottom:14px;">
                 <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">💳 Payment Instructions (for Offline / Bank Transfer games)</label>
                 <textarea name="payment_instructions" id="edit_event_payment_instructions" rows="3" placeholder="e.g. Bank: BNZ 02-1234-5678901-00&#10;Account Name: St Patrick's Gala&#10;Reference: Use your Order Reference &amp; Name" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit; line-height:1.4;"></textarea>
-                <small style="color:#64748b; font-size:0.8em;">Displayed to online buyers on grid.php when reserving tickets for non-Hi.Events events.</small>
+                <small style="color:#64748b; font-size:0.8em;">Supports **bold**, *italics*, &lt;b&gt;, &lt;i&gt;, and links.</small>
             </div>
 
             <div style="margin-bottom:14px;">
@@ -301,10 +338,14 @@ if (!function_exists('formatPricingTiersForInput')) {
                         <option value="numeric">Sequential Numbers (1, 16, 43)</option>
                     </select>
                 </div>
-                <div style="display:flex; align-items:center; padding-top:20px;">
+                <div style="display:flex; flex-direction:column; gap:8px; padding-top:14px;">
                     <label style="font-size:0.85em; font-weight:bold; color:#333; cursor:pointer;">
                         <input type="checkbox" name="allow_cell_selection" id="edit_allow_cell_selection" value="1" style="margin-right:6px;">
                         Allow Buyers to Pick Square
+                    </label>
+                    <label style="font-size:0.85em; font-weight:bold; color:#991b1b; cursor:pointer;">
+                        <input type="checkbox" name="entries_closed" id="edit_entries_closed" value="1" style="margin-right:6px;">
+                        🔒 Close Entries (No more sales)
                     </label>
                 </div>
             </div>
@@ -326,7 +367,7 @@ if (!function_exists('formatPricingTiersForInput')) {
             <button type="button" onclick="closeCreateEventModal()" style="background:none; border:none; font-size:1.5em; cursor:pointer; color:#718096;">&times;</button>
         </div>
 
-        <form method="POST" action="admin.php?tab=events">
+        <form method="POST" action="admin.php?tab=events" enctype="multipart/form-data">
             <input type="hidden" name="csrf_token" value="<?= htmlspecialchars($csrfToken) ?>">
             <input type="hidden" name="action" value="create_event">
 
@@ -354,12 +395,20 @@ if (!function_exists('formatPricingTiersForInput')) {
             <div style="margin-bottom:14px;">
                 <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">Description &amp; Public Notes</label>
                 <textarea name="event_description" rows="2" placeholder="Location, map link, gala information..." style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit;"></textarea>
+                <small style="color:#64748b; font-size:0.8em;">Supports **bold**, *italics*, &lt;b&gt;, &lt;i&gt;, and links.</small>
+            </div>
+
+            <!-- Create Event Image Upload -->
+            <div style="margin-bottom:14px;">
+                <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">Event Poster / Image (Optional)</label>
+                <input type="file" name="event_image" accept="image/jpeg,image/png,image/webp,image/gif" style="width:100%; padding:6px; border:1.5px solid #ccc; border-radius:6px; font-size:0.88em;">
+                <small style="color:#64748b; font-size:0.8em;">JPG, PNG, WEBP, or GIF (max 6MB). Displayed at bottom of Event Info.</small>
             </div>
 
             <div style="margin-bottom:14px;">
                 <label style="display:block; font-size:0.85em; font-weight:bold; color:#333; margin-bottom:4px;">💳 Payment Instructions (for Offline / Bank Transfer games)</label>
                 <textarea name="payment_instructions" rows="3" placeholder="e.g. Bank: BNZ 02-1234-5678901-00&#10;Account Name: St Patrick's Gala&#10;Reference: Use your Order Reference &amp; Name" style="width:100%; padding:9px 12px; border:1.5px solid #ccc; border-radius:6px; font-size:0.92em; font-family:inherit;"></textarea>
-                <small style="color:#64748b; font-size:0.8em;">Displayed to online buyers on grid.php when reserving tickets for non-Hi.Events events.</small>
+                <small style="color:#64748b; font-size:0.8em;">Supports **bold**, *italics*, &lt;b&gt;, &lt;i&gt;, and links.</small>
             </div>
 
             <div style="margin-bottom:14px;">
@@ -442,6 +491,21 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 const pickCheck = document.getElementById('edit_allow_cell_selection');
                 if (pickCheck) pickCheck.checked = (parseInt(ev.allow_cell_selection, 10) === 1);
+
+                const closedCheck = document.getElementById('edit_entries_closed');
+                if (closedCheck) closedCheck.checked = (parseInt(ev.entries_closed, 10) === 1);
+
+                const imgPreviewBox = document.getElementById('edit_image_preview_box');
+                const imgPreview = document.getElementById('edit_image_preview');
+                const removeImgCheck = document.getElementById('edit_remove_event_image');
+                if (removeImgCheck) removeImgCheck.checked = false;
+                if (ev.image && ev.image.length > 0) {
+                    imgPreview.src = ev.image;
+                    imgPreviewBox.style.display = 'block';
+                } else {
+                    imgPreview.src = '';
+                    imgPreviewBox.style.display = 'none';
+                }
 
                 const modal = document.getElementById('editEventModal');
                 if (modal) modal.style.display = 'flex';

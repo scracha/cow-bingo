@@ -30,9 +30,7 @@ try {
         http_response_code(429);
         exit('Too Many Requests');
     }
-} catch (\Throwable $e) {
-    // Gracefully continue if ip_address column is not yet migrated
-}
+} catch (\Throwable $e) {}
 
 // ----------------------------------------------------------------------------
 // 2. Authentication / Signature Verification
@@ -142,15 +140,16 @@ $isPayment      = in_array($eventType, $paymentEvents, true);
 $isCancellation = in_array($eventType, $cancellationEvents, true) || in_array($eventType, $ticketCancellationEvents, true);
 
 // ----------------------------------------------------------------------------
-// 6. Inactive Game Guard: block new cells, allow payments/cancellations
+// 6. Inactive / Closed Game Guard: block new cells, allow payments/cancellations
 // ----------------------------------------------------------------------------
-if (empty($event['is_active']) && $isCreation) {
-    // Pure creation events (order.created, attendee.created) -> short-circuit entirely
+$isBlockedForNew = empty($event['is_active']) || !empty($event['entries_closed']);
+if ($isBlockedForNew && $isCreation) {
+    // Pure creation events -> short-circuit entirely
     if (!$isPayment) {
         http_response_code(200);
         exit(json_encode([
             'status' => 'ignored',
-            'reason' => "Event ID {$eventDbId} is deactivated. New square allocations are blocked."
+            'reason' => "Event ID {$eventDbId} entries are closed or deactivated. New square allocations are blocked."
         ]));
     }
     // Dual-purpose events (order.completed) -> process payment in Branch (B), skip allocation in Branch (C)
@@ -209,7 +208,7 @@ if (in_array($eventType, $ticketCancellationEvents, true)) {
     exit(json_encode(['status' => 'success', 'event' => $eventType, 'released' => $released]));
 }
 
-// (B) Payment Status Updates
+// (B) Payment Status Updates (Permitted even when entries are closed)
 if ($isPayment && !in_array($eventType, ['order.created', 'order_created'], true)) {
     $orderArray = is_array($data['order'] ?? null) ? $data['order'] : [];
     $orderId = trim(
