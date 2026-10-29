@@ -1,8 +1,45 @@
-# 🐄 Cow Pat Bingo (Multi-Event)
+# 🐮 Cow Pat Bingo (Multi-Event)
 
 PHP-based **Cow Pat Bingo** visual game grid integrated with a self-hosted [hi.events](https://hi.events) server or run completely standalone/offline for fairs, galas, and school fundraisers.
 
 Supports multiple simultaneous events, custom grid dimensions, visual square selection, Android & iPad mobile field selling, automated multi-ticket package discounting, treasurer cash/online reconciliation, and detailed audit trails.
+
+---
+
+## 📸 Screenshots
+
+### 1. Live Interactive Paddock Grid
+*Public-facing real-time visual grid displaying sold, available, and winning squares with live buyer search, winner cow pats, and responsive paddock scaling.*
+
+![Live Interactive Paddock Grid](screenshots/grid.jpg)
+
+---
+
+### 2. Public Buyer Reservation Flow
+*Buyers can choose their own lucky squares (or pick random), take advantage of multi-square package discounts, complete security verification, and receive direct bank transfer instructions.*
+
+![Buyer Reservation Modal](screenshots/buyer_screenshot.jpg)
+
+---
+
+### 3. Event Setup & Configuration
+*Configure grid dimensions (up to 50×50), custom pricing tiers, pre-allocated prizes, event posters/flyers, numbering modes (A1..P16 vs 1..256), and rich-text formatted payment instructions.*
+
+![Admin Create and Edit Event](screenshots/admin_create_new_event.jpg)
+
+---
+
+### 4. Treasurer Reconciliation & Bookings Ledger
+*Real-time KPI financial cards, batch discount calculations, payment toggles, cash envelope balancing, 1-click CSV audit export, and NZ Privacy Act contact purging.*
+
+![Treasurer Bookings and Cash Reconciliation](screenshots/admin_bookings_and_cash_standalone.jpg)
+
+---
+
+### 5. Activity Log & Forensic Audit Trail
+*Detailed activity trail with category filtering capturing every square reservation, payment confirmation, prize award, setting change, and raw Hi.Events webhook payload.*
+
+![Activity Log and Audit Trail](screenshots/activity_and_audit_trail.jpg)
 
 ---
 
@@ -12,7 +49,7 @@ Supports multiple simultaneous events, custom grid dimensions, visual square sel
 - **Dual Selling Channels:**
   - **Online:** Instant square assignment via Hi.Events webhooks on completed ticket purchases.
   - **In-Field POS (`pos.php`):** Responsive interface optimized for Android phones and iPads with zero horizontal scrolling. Supports tap-to-pick or quick random allocations (`+1`, `+3`, `+5`, `+10`) with bulk package discount calculations and collision protection.
-- **Offline & Standalone Operation:** Create games without Hi.Events. Add custom event descriptions, Google Maps links, and direct bank transfer instructions for buyers.
+- **Offline & Standalone Operation:** Create games without Hi.Events. Add custom event descriptions, Google Maps links, rich-text bold/italics, and direct bank transfer instructions for buyers.
 - **Square Choice vs. Random Locking:** Toggle between open paddock square picking and locked random allocation at any time.
 - **Treasurer Reconciliation & Auditing:**
   - High-level KPI cards for Physical Cash in Envelopes vs. Online Gateway Revenue.
@@ -29,7 +66,7 @@ Supports multiple simultaneous events, custom grid dimensions, visual square sel
 
 | Role | Access Level | Description |
 |---|---|---|
-| **Super Admin** | Full Access | Manages all games, creates and deletes administrators and sellers, accesses raw webhook logs, and oversees tenant settings. |
+| **Super Admin** | Full Access | Manages all games, creates and edits administrators and sellers, manages event access & resets passwords, accesses raw webhook logs, and oversees tenant settings. |
 | **Event Admin** | Scoped Access | Creates and manages their own events, customizes event descriptions/locations, assigns prizes, manually allocates squares, triggers Hi.Events attendee syncs, creates iPad/phone sellers, and accesses their event audit trails. |
 | **Field Seller** | POS Only (`pos.php`) | Field runners locked to the mobile cash selling interface. Cannot access admin settings, logs, or other events. |
 
@@ -68,7 +105,7 @@ define('HIEVENTS_BASE_URL', 'https://events.yourdomain.com');
 define('HIEVENTS_EMAIL', 'admin@yourdomain.com');
 define('HIEVENTS_PASSWORD', 'your_api_password');
 
-define('SITE_TITLE', '🐄 St Patrick\'s Cow Pat Bingo 🐄');
+define('SITE_TITLE', '🐮 St Patrick\'s Cow Pat Bingo 🐮');
 ```
 
 ### 3. Database Migration
