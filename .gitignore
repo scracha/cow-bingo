@@ -2,3 +2,4 @@
 config.php
 admin.php
 *.bak
+uploads/
